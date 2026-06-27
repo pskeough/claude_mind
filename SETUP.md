@@ -85,7 +85,9 @@ This runs four steps in order and stops on any failure:
    hourly `sweep`, daily `dream`. The brain is now always-on and survives reboot.
 
 Confirm: `launchctl list | grep claudemind` (4 jobs) and `claude mcp list` (lists
-`lkhs-memory`). Then delete `answers.json` (it duplicated the profile).
+`lkhs-memory`). **Keep `answers.json`** (it is local and gitignored). It lets the user
+re-run `node scripts/finalize-setup.mjs --answers answers.json` in one command if they
+ever move the folder, repair the install, or upgrade — see "Persistence" below.
 
 ---
 
@@ -154,8 +156,29 @@ npm run smoke      # engine round-trip
   session, the SessionStart context and per-prompt memory injection should appear, and
   the `lkhs-memory` MCP tools should be callable from any project.
 
+## Persistence — set up once, then it runs itself
+
+After this one install, the user does NOTHING to keep it working:
+
+- The four launchd jobs auto-start at login and survive reboot; the daemon and watcher
+  auto-restart if they ever crash (KeepAlive). The hourly sweep and nightly dream run
+  on their own.
+- The hooks and the MCP registration live in `~/.claude/` and persist across Claude
+  Code updates.
+- Background summaries run on the Claude subscription via the `claude` CLI; the dollar
+  budget cap is set to `off` in the jobs, so nothing silently stops.
+- It only grows: every session is captured, every changed file re-embedded.
+
+The few times anything is needed (all rare, all one-liners):
+
+- **Moved the folder?** Re-run `node scripts/finalize-setup.mjs --answers answers.json`
+  from the new location (relinks launchd + config to the new path). So pick the final
+  location BEFORE setup — `~/ClaudeMind` is a good home; don't move it casually.
+- **Upgraded Node to a new major version?** `npm rebuild` (recompiles native modules).
+- **Want it gone?** `npm run uninstall` removes the jobs/hooks/MCP; then delete the folder.
+
 ## Done
 
 Tell the user, plainly: it is installed and always-on; it grows by itself as they use
-Claude Code; the console is at http://127.0.0.1:7099; and to remove everything outside
-this folder they can run `npm run uninstall`. Point them at `README.md` for day-to-day use.
+Claude Code; the console is at http://127.0.0.1:7099; and they don't need to touch it
+again. Point them at `README.md` for day-to-day use.
