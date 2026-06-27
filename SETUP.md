@@ -143,18 +143,24 @@ npm run moc        # Obsidian HOME map
 
 ---
 
-## Verify
+## Verify (and fix anything that isn't working)
+
+Run the diagnostic, fix every failure it reports, repeat until clean:
 
 ```bash
-npm run status     # brain-health dashboard
-npm run smoke      # engine round-trip
+npm run doctor            # checks every component; prints the exact FIX for each ✗
+# ...apply each FIX line, then re-run until it prints "0 failed"...
+npm run doctor -- --deep  # adds the real embed -> query -> retrieve round-trip
 ```
 
-- The daemon (port 7077) and watcher should be running (launchd). The console:
-  `npm run web` then open http://127.0.0.1:7099 (or double-click `launch.command`).
-- Tell the user to quit and reopen Claude Code so the new hooks load. On the next
-  session, the SessionStart context and per-prompt memory injection should appear, and
-  the `lkhs-memory` MCP tools should be callable from any project.
+Then run the functional tests and follow the full failure matrix in
+**`docs/verify-and-fix.md`** — that doc is written for you to self-heal the install.
+Do not tell the user it works until `doctor` is green and the round-trip passes.
+
+Finally: the console is `npm run web` → http://127.0.0.1:7099 (or double-click
+`launch.command`). Have the user quit and reopen Claude Code once so the hooks load;
+on the next session the LKHS context block should appear and the `lkhs-memory` MCP
+tools should be callable from any project.
 
 ## Persistence — set up once, then it runs itself
 

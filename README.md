@@ -20,6 +20,9 @@ API keys, no extra cost).
 
 ## Install (one time)
 
+**Non-technical? Read [`HER-QUICKSTART.md`](HER-QUICKSTART.md)** — the same install in
+4 plain steps with no jargon.
+
 You need a Mac with [Claude Code](https://claude.ai/code) installed and signed in
 (Max subscription), and the Xcode Command Line Tools (`xcode-select --install`).
 
@@ -42,7 +45,8 @@ normally. When you want to look inside it:
   to http://127.0.0.1:7099
 - **Add a note to the wiki:** drop a markdown file into `raw/`; it gets filed automatically.
 - **Search your memory:** `npm run query "whatever you're looking for"`
-- **Check it's healthy:** `npm run status`
+- **Check it's healthy (with fixes):** `npm run doctor` — or just open Claude Code in
+  the folder and say "check Claude Mind is healthy and fix it."
 
 ## Good to know
 
