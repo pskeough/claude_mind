@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "schema_version": "1.0",
+    "updated": "YYYY-MM-DD",
+    "instructions": "Ground-truth user profile. Background agents read this every session and must NEVER overwrite fields listed in constraints.never_overwrite without explicit user verification. Copy this file to core_profile.json and fill it in; the real file is gitignored so your identity never enters version control."
+  },
+  "user": {
+    "handle": "your-handle",
+    "email": "you@example.com",
+    "display_name": "First",
+    "legal_name": "First Last",
+    "age": 0,
+    "nationality": "",
+    "location_current": "",
+    "background": {
+      "education": ["Degree, Institution, Year"],
+      "core_interests": ["interest"],
+      "expertise_areas": ["area of expertise"]
+    },
+    "stylistic_fingerprint": {
+      "tone": "how you want the assistant to write to you",
+      "formatting": "prose vs bullets, tables, etc.",
+      "communication_preferences": ["e.g. no preamble", "no praise", "flag uncertainty"],
+      "writing_voice": "notes on your own writing voice"
+    }
+  },
+  "active_objectives": {
+    "objective_key": { "title": "", "target": "", "status": "", "deadline": "YYYY-MM-DD" }
+  },
+  "tracked_projects": {
+    "project_key": { "focus": "", "status": "", "started": "YYYY-MM-DD", "github": "" }
+  },
+  "domains_tracked": [],
+  "constraints": {
+    "never_overwrite": ["user", "active_objectives", "tracked_projects"],
+    "auto_append_allowed": ["domains_tracked", "_meta.updated"]
+  }
+}

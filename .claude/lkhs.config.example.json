@@ -1,0 +1,55 @@
+{
+  "_comment": "LKHS configuration template. Copy this to ONE of two places: (a) the global ~/.claude/lkhs-capture-config.json (applies to every vault on this machine), or (b) a repo-local .claude/lkhs.config.json inside the vault (ships with a clone, overlays the global). Resolution everywhere is env > config > built-in default; see .claude/bin/config.ts. Remove the _comment_* keys in your real config or leave them, they are ignored.",
+
+  "_comment_vault": "centralVault: absolute path to the vault (where all memory is written). Optional. If omitted, the engine derives the root from the bin/ script location, so you usually only set this when running scripts from outside the vault. Env override: LKHS_VAULT_ROOT.",
+  "centralVault": "/absolute/path/to/your/vault",
+
+  "_comment_identity": "personaHub: the graph hub / identity owner. Optional. If omitted it is derived from persona/entities.json (sticky across rebuilds) then core_profile.json user block. Set it to pin identity. Env override: LKHS_PERSONA_LABEL / LKHS_PERSONA_ID.",
+  "personaHub": { "id": "me", "label": "Your Name", "type": "person" },
+
+  "_comment_models": "summaryModel: model for all background summaries/cards/themes (env LKHS_SUMMARY_MODEL). chatModel: model for the web-console memory chat (env LKHS_CHAT_MODEL); falls back to summaryModel.",
+  "summaryModel": "claude-sonnet-4-6",
+  "chatModel": "claude-sonnet-4-6",
+
+  "_comment_ports": "daemonPort: warm retrieval daemon (env LKHS_DAEMON_PORT). webPort: local console (env LKHS_WEB_PORT).",
+  "daemonPort": 7077,
+  "webPort": 7099,
+
+  "_comment_retrieval": "Retrieval + rerank gate knobs. retrieveThreshold is the cosine fallback floor; rerankHigh/rerankLow bound the cross-encoder inject/skip bands; personaBoost is the additive bump for the identity layer; metaFloor gates overview queries in the web console.",
+  "retrieveThreshold": 0.62,
+  "retrieveTopK": 4,
+  "enableRerank": true,
+  "rerankPool": 16,
+  "rerankMaxChars": 400,
+  "rerankHigh": 0.30,
+  "rerankLow": 0.02,
+  "personaBoost": 0.15,
+  "metaFloor": 0.5,
+
+  "_comment_capture": "exclude: absolute paths whose Claude Code sessions are NOT captured into memory (matched case-insensitively, OS-agnostic).",
+  "exclude": [],
+
+  "_comment_ingest": "ingestRoots: directories whose immediate subfolders are ingested as projects into library/. ingestExclude: folder names skipped during the file walk. ingestSkipPatterns: case-insensitive substrings marking copy/backup folders to skip.",
+  "ingestRoots": [
+    "/absolute/path/to/your/projects"
+  ],
+  "ingestExclude": [
+    "node_modules", ".git", ".venv", "venv", "env", "__pycache__", ".mypy_cache", ".pytest_cache",
+    "dist", "build", "out", ".next", ".cache", "target", ".obsidian", ".idea", ".vscode",
+    "checkpoints", "wandb", ".ipynb_checkpoints", "site-packages"
+  ],
+  "ingestSkipPatterns": [
+    "- copy", "copy (", "_copy", " (copy)", "backup", " - bak", ".bak", " - old", "(old)"
+  ],
+
+  "_comment_clinical": "clinical: OPTIONAL override of the clinical-quarantine lexicon used by the persona pipeline (persona-facts.ts). Each key is a list of terms OR-joined into a case-insensitive word-boundary regex. If omitted entirely, safe built-in defaults apply. med: medication/treatment terms (a generic '<number>mg' pattern is always appended). crisis: personal psychiatric-crisis terms. coping: maladaptive-coping terms. advocacyGuard / academicGuard: terms that mark advocacy work or coursework so they are NOT mis-quarantined as personal clinical material.",
+  "clinical": {
+    "med": ["antidepressant", "stimulant medication", "ssri", "snri"],
+    "crisis": ["suicidal", "self-harm", "psychiatric hospital", "inpatient"],
+    "coping": ["drinking to cope", "self-medicating"],
+    "advocacyGuard": ["harm reduction", "overdose prevention", "drug policy"],
+    "academicGuard": ["literature review", "coursework", "study", "research", "paper", "lecture", "exam"]
+  },
+
+  "_comment_buildDate": "buildDate: OPTIONAL frozen date (YYYY-MM-DD) for reproducible persona rebuilds. Omit to stamp facts with the day the rebuild runs (recommended). Env override: LKHS_BUILD_DATE."
+}

@@ -1,0 +1,62 @@
+{
+  "name": "claudemind",
+  "version": "1.0.0",
+  "description": "Claude Mind — a local, always-on memory brain for Claude Code (portable build).",
+  "main": "index.js",
+  "scripts": {
+    "preflight": "node scripts/preflight.mjs",
+    "setup:wiring": "node scripts/finalize-setup.mjs",
+    "install:hooks": "node scripts/install-global-hooks.mjs",
+    "install:mcp": "node scripts/register-mcp.mjs",
+    "install:launchd": "node scripts/install-launchd.mjs",
+    "uninstall": "node scripts/uninstall.mjs",
+    "watch": "tsx .claude/bin/ambient-watcher.ts",
+    "embed": "tsx .claude/bin/vector-engine.ts",
+    "reindex": "tsx .claude/bin/vector-engine.ts --force",
+    "recontextualize": "tsx .claude/bin/recontextualize.ts",
+    "capture:sweep": "tsx .claude/bin/capture-sweep.ts",
+    "graph": "tsx .claude/bin/graph-build.ts",
+    "cards": "tsx .claude/bin/build-cards.ts",
+    "themes": "tsx .claude/bin/build-themes.ts",
+    "moc": "tsx .claude/bin/build-moc.ts",
+    "status": "tsx .claude/bin/status.ts",
+    "ingest:dirs": "tsx .claude/bin/ingest-dirs.ts",
+    "serve": "tsx .claude/bin/lkhs-daemon.ts",
+    "web": "tsx .claude/bin/lkhs-web.ts",
+    "migrate": "tsx .claude/bin/migrate-store.ts",
+    "query": "tsx .claude/bin/vector-query.ts",
+    "smoke": "tsx .claude/bin/smoke-test.ts",
+    "wiki:import": "tsx .claude/bin/pipelines.ts wiki_import",
+    "wiki:fix": "tsx .claude/bin/pipelines.ts wiki_fix",
+    "dream": "tsx .claude/bin/pipelines.ts auto_dream",
+    "ingest": "tsx .claude/bin/ingest-corpus.ts",
+    "persona:extract": "tsx .claude/bin/persona-extract.ts",
+    "persona:facts": "tsx .claude/bin/persona-facts.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.10.0",
+    "chokidar": "^5.0.0",
+    "dotenv": "^17.4.2",
+    "fastembed": "^2.1.0",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "sqlite-vec": "^0.1.9"
+  },
+  "overrides": {
+    "onnxruntime-node": "1.24.3",
+    "onnxruntime-common": "1.24.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}

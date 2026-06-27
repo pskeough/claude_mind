@@ -1,0 +1,45 @@
+# --- dependencies & caches (rebuilt per machine) ---
+node_modules/
+local_cache/
+.claude/logs/
+.claude/ambient.lock
+.claude/watcher.lock
+.claude/tmp_*
+
+# --- vector store (rebuilt locally) ---
+.claude/memory/vector_store.json
+.claude/memory/vector_store.json.*
+.claude/memory/vector_store.db
+.claude/memory/vector_store.db-*
+
+# --- runtime-generated memory (stays on the machine) ---
+journal/
+library/
+cards/
+themes/
+graph/
+HOME.md
+
+# --- personal identity / config: NEVER tracked ---
+.claude/memory/core_profile.json
+.claude/lkhs.config.json
+~/.claude/lkhs-capture-config.json
+answers.json
+
+# --- persona layer: deep user model + raw chat dump + clinical tier: never leave the machine ---
+.claude/memory/persona_raw/
+.claude/persona_raw/
+persona/
+persona_clinical/
+.claude/memory/persona_facts.jsonl
+.claude/memory/persona_clinical.jsonl
+
+# --- domain tiles generated at runtime (keep the dir, ignore contents except schema) ---
+.claude/memory/domains/*.json
+
+# --- misc ---
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db

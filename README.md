@@ -1,0 +1,57 @@
+# Claude Mind
+
+A private memory brain for Claude Code that runs entirely on your Mac. It quietly
+remembers your Claude Code sessions, reads your files and projects, and feeds the
+relevant bits back to Claude whenever you work, so you don't have to re-explain
+yourself. Nothing leaves your computer, and it runs on your Claude subscription (no
+API keys, no extra cost).
+
+## What it does
+
+- **Remembers your sessions.** Every Claude Code conversation is captured, summarized,
+  and indexed, so "what did we do on X?" or "where did I leave that?" just works.
+- **Knows your work.** It ingests the folders you point it at and builds a searchable,
+  linked map of your projects.
+- **Knows you.** It can synthesize a deep profile from your exported Claude chat
+  history (optional), so Claude works the way you prefer from the first message.
+- **Stays live.** Background jobs keep it running and growing on their own.
+- **A local console.** A web dashboard to explore the graph, timeline, your projects,
+  and to chat with your own memory: http://127.0.0.1:7099
+
+## Install (one time)
+
+You need a Mac with [Claude Code](https://claude.ai/code) installed and signed in
+(Max subscription), and the Xcode Command Line Tools (`xcode-select --install`).
+
+```bash
+git clone https://github.com/pskeough/Kath_Claude_Mind.git
+cd Kath_Claude_Mind
+bash setup.sh
+```
+
+Then open Claude Code in this folder and tell it: **run setup**. It reads `SETUP.md`
+and walks you through the rest (your profile, your folders, your chat history, and
+turning on the background jobs). That's it.
+
+## Day to day
+
+You don't have to do anything — it works in the background while you use Claude Code
+normally. When you want to look inside it:
+
+- **Open the console:** double-click `launch.command` (or run `npm run web`), then go
+  to http://127.0.0.1:7099
+- **Add a note to the wiki:** drop a markdown file into `raw/`; it gets filed automatically.
+- **Search your memory:** `npm run query "whatever you're looking for"`
+- **Check it's healthy:** `npm run status`
+
+## Good to know
+
+- Everything personal stays on your Mac. Your profile, chat-derived persona, and any
+  sensitive health material are never tracked by git and never uploaded.
+- It updates itself: a watcher re-indexes changed files, an hourly sweep captures
+  recent sessions, and a nightly pass consolidates everything.
+- To remove the parts installed outside this folder (background jobs, hooks, the memory
+  tool): `npm run uninstall`. To remove it entirely, also delete this folder.
+
+For the technical details, see `CLAUDE.md`. For the persona-building step, see
+`docs/persona-synthesis.md`.

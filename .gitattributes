@@ -1,0 +1,13 @@
+# Normalize to LF in the repo so a macOS clone gets correct line endings.
+# CRLF in a .sh/.command/.mjs file breaks execution on macOS (\r errors).
+* text=auto eol=lf
+*.sh   text eol=lf
+*.command text eol=lf
+*.mjs  text eol=lf
+*.ts   text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.plist text eol=lf
+*.md   text eol=lf
+# Windows-only launcher stays CRLF.
+*.bat  text eol=crlf

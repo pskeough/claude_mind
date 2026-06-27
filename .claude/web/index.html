@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Mind - Console</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark">◐</div>
+    <div class="brand-text"><div class="brand-name">Claude Mind</div><div class="brand-sub">memory console</div></div>
+  </div>
+  <nav id="nav">
+    <a href="#overview" data-view="overview"><span class="ico">▦</span> Overview</a>
+    <a href="#persona" data-view="persona"><span class="ico">☉</span> Persona</a>
+    <a href="#graph" data-view="graph"><span class="ico">⬡</span> Knowledge graph</a>
+    <a href="#explorer" data-view="explorer"><span class="ico">▤</span> Explorer</a>
+    <a href="#timeline" data-view="timeline"><span class="ico">▭</span> Timeline</a>
+    <a href="#themes" data-view="themes"><span class="ico">❖</span> Themes</a>
+    <a href="#projects" data-view="projects"><span class="ico">▢</span> Projects</a>
+    <a href="#inspector" data-view="inspector"><span class="ico">◎</span> Retrieval inspector</a>
+    <a href="#storage" data-view="storage"><span class="ico">▣</span> Storage</a>
+    <a href="#chat" data-view="chat"><span class="ico">✦</span> Memory chat</a>
+  </nav>
+  <div class="status" id="status"><span class="dot" id="status-dot"></span><span id="status-text">connecting...</span></div>
+</aside>
+<main id="view"><div class="loading">Loading the Mind...</div></main>
+<script src="/app.js"></script>
+</body>
+</html>
