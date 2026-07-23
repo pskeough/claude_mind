@@ -50,7 +50,8 @@
   "report:weekly": "tsx .claude/bin/weekly-report.ts",
   "hygiene": "tsx .claude/bin/store-hygiene.ts",
   "prune:stale": "tsx .claude/bin/prune-stale.ts",
-  "refresh": "node scripts/refresh.mjs"
+  "refresh": "node scripts/refresh.mjs",
+  "import:chats": "tsx .claude/bin/normalize-chat-export.ts"
  },
  "keywords": [],
  "author": "",

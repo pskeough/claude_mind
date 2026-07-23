@@ -1,7 +1,8 @@
 # SETUP — first-run install (read this if you are Claude Code)
 
 You are Claude Code, opened in a freshly cloned Claude Mind vault. Your job is to set
-up a personal, always-on memory brain for the person whose Mac this is. Work WITH them:
+up a personal, always-on memory brain for the person whose machine this is (macOS,
+Windows, or Linux — platform-specific bits are called out where they differ). Work WITH them:
 ask the questions in Step 1 conversationally, confirm before destructive or
 outward-facing steps, and explain what each step does in plain language. Do not dump
 this file at them. No em dashes in anything you write.
@@ -104,8 +105,9 @@ This runs four steps in order and stops on any failure:
    and wires them into `~/.claude/settings.json` (backed up first; existing hooks preserved).
    Now memory captures and retrieval fire in EVERY project, not just this folder.
 3. **register-mcp** → registers the `lkhs-memory` MCP server at user scope.
-4. **install-launchd** → loads four LaunchAgents: keepalive `daemon` + `watcher`,
-   hourly `sweep`, daily `dream`. The brain is now always-on and survives reboot.
+4. **install-launchd** → macOS only: loads four LaunchAgents: keepalive `daemon` +
+   `watcher`, hourly `sweep`, daily `dream`. On Windows/Linux this step no-ops —
+   register the equivalent scheduled jobs per the **Persistence** section below.
 
 Confirm: `launchctl list | grep claudemind` (4 jobs) and `claude mcp list` (lists
 `lkhs-memory`). **Keep `answers.json`** (it is local and gitignored). It lets the user
@@ -127,15 +129,33 @@ re-run anytime to pick up new projects (it is incremental / hash-skipped).
 
 ---
 
-## Step 4 — Ingest her Claude chat history (the persona layer)
+## Step 4 — Ingest their chat history (the persona layer, ANY provider)
 
-First have the user export their Claude data: **claude.ai → Settings → Privacy →
-Export data**. They get an email with a zip; unzip it to a folder containing
-`conversations.json` (and maybe `projects/`). Get that folder's path, then:
+The persona synthesizes from their AI conversation history. It accepts exports
+from **Claude, ChatGPT, Gemini, or any transcript folder** via the universal
+importer; ask which assistants they have used and gather every export they want
+included:
+
+- **Claude**: claude.ai → Settings → Privacy → Export data (emailed zip; unzip to a
+  folder with `conversations.json` and maybe `projects/`).
+- **ChatGPT**: chatgpt.com → Settings → Data controls → Export (zip contains
+  `conversations.json` in OpenAI's format).
+- **Gemini / anything else**: Google Takeout JSON, or a folder of .md/.txt
+  transcripts (files with `User:` / `Assistant:` speaker lines split into turns).
+
+Normalize each export (the importer auto-detects the format; `--append` merges
+several providers into one corpus), then extract:
 
 ```bash
-npm run persona:extract -- /path/to/export
+npm run import:chats -- /path/to/claude-export
+npm run import:chats -- /path/to/chatgpt-export --out /path/to/claude-export --append
+npm run persona:extract -- /path/to/claude-export/normalized
 ```
+
+A pure-Claude export can also skip the normalizer and run persona:extract on the
+export folder directly (same result). If the Claude export has a `projects/`
+folder, copy it into the `normalized/` dir before extracting so project docs are
+included.
 
 This produces conversation batches in `.claude/memory/persona_raw/`. Now do the
 **synthesis** step: follow `docs/persona-synthesis.md` exactly — read the batches,
@@ -187,11 +207,30 @@ tools should be callable from any project.
 
 ## Persistence — set up once, then it runs itself
 
+**macOS**: `npm run install:launchd` (done in Step 2) loads the four LaunchAgents.
+
+**Windows**: launchd does not exist; register the equivalent Task Scheduler jobs
+yourself (run these from the vault folder, substituting the absolute vault path;
+confirm with the user first since they modify system scheduling):
+
+```powershell
+$V = (Get-Location).Path; $N = (Get-Command node).Source
+schtasks /Create /TN "ClaudeMind-Daemon"  /SC ONLOGON /TR "`"$N`" --import tsx `"$V\.claude\bin\lkhs-daemon.ts`"" /F
+schtasks /Create /TN "ClaudeMind-Watcher" /SC ONLOGON /TR "`"$N`" --import tsx `"$V\.claude\bin\ambient-watcher.ts`"" /F
+schtasks /Create /TN "ClaudeMind-Sweep"   /SC HOURLY  /TR "`"$N`" --import tsx `"$V\.claude\bin\capture-sweep.ts`"" /F
+schtasks /Create /TN "ClaudeMind-Refresh" /SC DAILY /ST 04:00 /TR "`"$N`" `"$V\scripts\refresh.mjs`"" /F
+```
+
+(Each task should also set the working directory to the vault; if `schtasks` quoting
+fights you, create the four tasks in the Task Scheduler UI instead — same commands.)
+
+**Linux**: cron or systemd user timers with the same four commands.
+
 After this one install, the user does NOTHING to keep it working:
 
-- The four launchd jobs auto-start at login and survive reboot; the daemon and watcher
-  auto-restart if they ever crash (KeepAlive). The hourly sweep and nightly dream run
-  on their own.
+- The scheduled jobs auto-start at login and survive reboot; on macOS the daemon and
+  watcher auto-restart if they ever crash (KeepAlive). The hourly sweep and nightly
+  refresh run on their own.
 - The hooks and the MCP registration live in `~/.claude/` and persist across Claude
   Code updates.
 - Background summaries run on the Claude subscription via the `claude` CLI; the dollar

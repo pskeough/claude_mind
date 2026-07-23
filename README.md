@@ -12,8 +12,16 @@ API keys, no extra cost).
   and indexed, so "what did we do on X?" or "where did I leave that?" just works.
 - **Knows your work.** It ingests the folders you point it at and builds a searchable,
   linked map of your projects.
-- **Knows you.** It can synthesize a deep profile from your exported Claude chat
-  history (optional), so Claude works the way you prefer from the first message.
+- **Knows you.** It synthesizes a deep, longitudinal user model from your exported
+  chat history — Claude, ChatGPT, Gemini, or any transcript folder, via a universal
+  importer (`npm run import:chats`) — so Claude works the way you prefer from the
+  first message. Facts are bi-temporal: the system knows when something stopped
+  being true and answers from the current state, not the loudest old mention.
+- **Thinks about its own memory.** Nightly control loops grade yesterday's memory
+  injections against what actually helped (hindsight), reconcile facts against new
+  sessions and flag contradictions for your call instead of silently overwriting,
+  retire distilled episodes to a cold tier, fire when-X-then-Y prospective
+  intentions, and write you a three-things morning brief.
 - **Stays live.** Background jobs keep it running and growing on their own.
 - **Controls what it reveals.** Every memory carries an audience scope (private,
   personal, professional, public); sessions can run under a `work` or `public`
@@ -34,21 +42,26 @@ API keys, no extra cost).
 
 ## Install (one time)
 
-**Non-technical? Read [`HER-QUICKSTART.md`](HER-QUICKSTART.md)** — the same install in
-4 plain steps with no jargon.
+Runs on **macOS, Windows, and Linux**, Apple Silicon/ARM and x64 alike — the native
+pieces (SQLite, the embedding runtime) compile for your machine during `npm install`.
+You need [Node 18+](https://nodejs.org) and [Claude Code](https://claude.ai/code)
+installed and signed in (subscription — no API key anywhere). On macOS you'll also
+want the Xcode Command Line Tools (`xcode-select --install`); on Windows, the usual
+build tools that ship with recent Node installers are enough.
 
-You need a Mac with [Claude Code](https://claude.ai/code) installed and signed in
-(Max subscription), and the Xcode Command Line Tools (`xcode-select --install`).
+**Non-technical, on a Mac? Read [`HER-QUICKSTART.md`](HER-QUICKSTART.md)** — the same
+install in 4 plain steps with no jargon.
 
 ```bash
 git clone https://github.com/pskeough/claude_mind.git
 cd claude_mind
-bash setup.sh
+bash setup.sh        # macOS/Linux (on Windows: npm install, then npm run preflight)
 ```
 
 Then open Claude Code in this folder and tell it: **run setup**. It reads `SETUP.md`
-and walks you through the rest (your profile, your folders, your chat history, and
-turning on the background jobs). That's it.
+and walks you through the rest (your profile, your folders, your chat history from
+any provider, and turning on the background jobs — launchd on macOS, Task Scheduler
+on Windows). That's it.
 
 ## Day to day
 
@@ -64,10 +77,18 @@ normally. When you want to look inside it:
 
 ## Good to know
 
-- Everything personal stays on your Mac. Your profile, chat-derived persona, and any
-  sensitive health material are never tracked by git and never uploaded.
+- Everything personal stays on your machine. Your profile, chat-derived persona, and
+  any sensitive health material are never tracked by git and never uploaded. The
+  clinical tier is quarantined even from your own retrieval unless you ask directly.
 - It updates itself: a watcher re-indexes changed files, an hourly sweep captures
-  recent sessions, and a nightly pass consolidates everything.
+  recent sessions, and a nightly pass runs the full consolidation: hindsight grading,
+  fact reconciliation, preference mining, rebuilds, a privacy-leak smoke test, and a
+  daemon recycle. Sundays add an eval point, a store-hygiene check, and your weekly
+  report.
+- It is measured, not vibes: the repo ships the same evaluation harnesses the system
+  was tuned with (offline recall/temporal/abstention, live-gate restraint, and the
+  adversarial scope-leak harness), and the weekly hygiene pass alarms you if quality
+  drifts.
 - To remove the parts installed outside this folder (background jobs, hooks, the memory
   tool): `npm run uninstall`. To remove it entirely, also delete this folder.
 

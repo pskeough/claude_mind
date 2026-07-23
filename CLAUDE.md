@@ -32,7 +32,7 @@ layer. Read those at session start. Do not assume; the profile is authoritative.
 ## Automation (always-on)
 - A SessionStart hook (`.claude/hooks/lkhs-session-start.mjs`) injects live vault context every session and ensures the watcher + retrieval daemon are running.
 - Global hooks (installed by setup into `~/.claude/`) capture every session (SessionEnd/PreCompact) and inject relevant memory per prompt (UserPromptSubmit) across ALL projects.
-- On macOS, launchd jobs keep the daemon + watcher alive and run an hourly capture sweep + a daily "dream" consolidation.
+- Background jobs keep the daemon + watcher alive and run an hourly capture sweep + a daily consolidation (`scripts/refresh.mjs`): launchd on macOS, Task Scheduler on Windows, cron/systemd on Linux (see SETUP.md Persistence).
 - Captures and summaries shell out to the `claude` CLI, so they run on your Claude subscription (no API key).
 
 ## Architecture
