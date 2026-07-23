@@ -43,3 +43,11 @@ persona_clinical/
 *.log
 .DS_Store
 Thumbs.db
+
+# runtime state (per-install, never shipped)
+.claude/memory/store_hygiene.json
+.claude/memory/preference_mined.json
+.claude/memory/voice_recal_state.json
+.claude/memory/voice-rule-proposals.jsonl
+.claude/memory/reports/
+.claude/memory/eval/runs/
