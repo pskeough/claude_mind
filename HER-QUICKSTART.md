@@ -27,7 +27,7 @@ Open the **Terminal** app and paste these three lines, one at a time (press Retu
 after each):
 
 ```
-git clone https://github.com/pskeough/Kath_Claude_Mind.git ~/ClaudeMind
+git clone https://github.com/pskeough/claude_mind.git ~/ClaudeMind
 cd ~/ClaudeMind
 bash setup.sh
 ```

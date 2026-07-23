@@ -41,7 +41,7 @@ You need a Mac with [Claude Code](https://claude.ai/code) installed and signed i
 (Max subscription), and the Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone https://github.com/pskeough/Kath_Claude_Mind.git
+git clone https://github.com/pskeough/claude_mind.git
 cd Kath_Claude_Mind
 bash setup.sh
 ```

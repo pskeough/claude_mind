@@ -1,5 +1,5 @@
 /**
- * env-scan.ts — machine + toolchain catalog. The vault models Patrick (persona),
+ * env-scan.ts — machine + toolchain catalog. The vault models the user (persona),
  * his work (wiki/cards), and the memory system itself, but nothing modeled the
  * MACHINE the work runs on. This does.
  *

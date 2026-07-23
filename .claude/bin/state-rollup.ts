@@ -6,7 +6,7 @@
  *   .claude/memory/state.json  — machine-readable rollup
  *   .claude/memory/TODAY.md    — compact digest the SessionStart hook injects
  *
- * Design constraint: push, not pull. Nothing here expects Patrick to open a
+ * Design constraint: push, not pull. Nothing here expects the user to open a
  * dashboard; the digest rides into every session via the hook. Regenerated in
  * the background at session start and by the scheduled refresh, so it is at
  * most one session stale.

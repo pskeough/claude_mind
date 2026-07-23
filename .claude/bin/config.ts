@@ -196,7 +196,7 @@ export interface PersonaHub { id: string; label: string; type: string }
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /**
- * The graph hub / identity owner, data-driven instead of hardcoded "Patrick Keough".
+ * The graph hub / identity owner, data-driven instead of hardcoded to one person.
  * Order: env > config.personaHub > existing persona/entities.json hub (sticky, so
  * identity stays stable across rebuilds) > core_profile.json user block > generic.
  */

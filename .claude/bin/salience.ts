@@ -2,7 +2,7 @@
  * LKHS salience brief (P5, LKHS-V2-UPGRADE-PATH.md): attention, not storage.
  *
  * One nightly claude -p judgment over the system's own state answers: "if I could
- * tell Patrick three things this morning, what are they and why". Inputs are all
+ * tell the user three things this morning, what are they and why". Inputs are all
  * ground artifacts the other passes maintain: state.json (deadlines/lanes/flags),
  * pending reconcile proposals, recently fired intentions, the hindsight headline.
  *

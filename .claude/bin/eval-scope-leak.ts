@@ -23,7 +23,7 @@
  * sends each injected item's TEXT to a `claude -p` judge (summaryModel, per the
  * model policy) asking whether the text itself reveals a category the profile
  * ceiling excludes — a semantic leak, independent of labels. Found this way on
- * 2026-07-23: wiki/Biography, cards/Letters, Katharine material (then fixed via
+ * 2026-07-23 in the reference vault: three mis-scoped files (then fixed via
  * chunkScopes.prefixes). Semantic-leak verdicts are reported separately and do
  * not fail the run by themselves; they are review queue, not oracle.
  */

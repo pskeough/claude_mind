@@ -1,7 +1,7 @@
 /**
  * LKHS rehearsal packs (P9, LKHS-V2-UPGRADE-PATH.md): preparation, not reaction.
  *
- * For the top active lanes in state.json, pre-assemble the context Patrick would
+ * For the top active lanes in state.json, pre-assemble the context the user would
  * otherwise reconstruct on session open: exact stopping point (last journal entry's
  * open threads), pending reconcile proposals touching the project, and prospective
  * intentions waiting on it. Deterministic assembly, no LLM. The SessionStart

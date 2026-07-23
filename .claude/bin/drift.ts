@@ -1,5 +1,5 @@
 /**
- * LKHS drift report: how Patrick's positions, plans, and state moved over a window,
+ * LKHS drift report: how the user's positions, plans, and state moved over a window,
  * with receipts. The persona fact layer is bi-temporal (valid_at / invalid_at /
  * supersedes), so belief change is queryable: every supersession pair is a documented
  * change of mind or circumstance, every cluster of new facts is a new thread.
