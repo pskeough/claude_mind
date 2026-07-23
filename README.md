@@ -42,7 +42,7 @@ You need a Mac with [Claude Code](https://claude.ai/code) installed and signed i
 
 ```bash
 git clone https://github.com/pskeough/claude_mind.git
-cd Kath_Claude_Mind
+cd claude_mind
 bash setup.sh
 ```
 
