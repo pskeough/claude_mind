@@ -117,6 +117,42 @@ fs.existsSync(path.join(VAULT, "persona", "PROFILE.md"))
   ? add("PASS", "persona", "deep user model present")
   : add("WARN", "persona", "not built (optional)", "see docs/persona-synthesis.md (export chats -> persona:extract -> synthesis)");
 
+// 13. Scope layer + modules (synthesis backport)
+const mergedCfg = { ...(readJson(path.join(HOME_CLAUDE, "lkhs-capture-config.json")) || {}), ...(readJson(path.join(VAULT, ".claude", "lkhs.config.json")) || {}) };
+{
+  const SCOPES = ["clinical", "private", "personal", "professional", "public"];
+  const profs = Array.isArray(mergedCfg.profiles) ? mergedCfg.profiles : null;
+  if (!profs) add("PASS", "scope profiles", "built-in registry (full/work/public)");
+  else {
+    const bad = profs.filter((p) => !p?.name || !SCOPES.includes(p.ceiling));
+    bad.length === 0
+      ? add("PASS", "scope profiles", profs.map((p) => `${p.name}:${p.ceiling}`).join(", "))
+      : add("FAIL", "scope profiles", `invalid entries: ${bad.map((p) => p?.name || "?").join(", ")}`, "fix `profiles` in .claude/lkhs.config.json (ceiling must be one of " + SCOPES.join("/") + ")");
+  }
+  if (fs.existsSync(dbPath)) {
+    try {
+      const { default: Database } = await import("better-sqlite3");
+      const db = new Database(dbPath, { readonly: true });
+      const cols = db.prepare("PRAGMA table_info(fact)").all().map((c) => c.name);
+      db.close();
+      cols.includes("scope")
+        ? add("PASS", "scope schema", "fact.scope column present")
+        : add("FAIL", "scope schema", "fact.scope missing", "npx tsx .claude/bin/migrate-store.ts --schema");
+    } catch (e) { add("WARN", "scope schema", `could not open store: ${e.message}`, "close other processes and re-run"); }
+  }
+  const mim = process.env.LKHS_MIMESIS_PROFILES || mergedCfg.mimesisProfilesRoot;
+  if (!mim) add("PASS", "voice module", "off (no mimesisProfilesRoot — miner/recalibration dormant)");
+  else fs.existsSync(String(mim))
+    ? add("PASS", "voice module", `on -> ${mim}`)
+    : add("FAIL", "voice module", `mimesisProfilesRoot not found: ${mim}`, "fix the path in .claude/lkhs.config.json or remove the key");
+  fs.existsSync(path.join(VAULT, "evals", "scope-leak", "probes.jsonl"))
+    ? add("PASS", "leak probes", "probe set present (nightly smoke active)")
+    : add("WARN", "leak probes", "no probe set yet — nightly smoke skips", "scaffold per docs/evals.md once the vault has content");
+  fs.existsSync(path.join(VAULT, ".claude", "memory", "eval", "memory_eval.jsonl"))
+    ? add("PASS", "memory eval set", "question set present (weekly drift alarm active)")
+    : add("WARN", "memory eval set", "no question set yet — weekly eval skips", "scaffold per docs/evals.md once the vault has content");
+}
+
 // ---- optional deep engine test ----
 if (deep) {
   console.log("Running engine round-trip (npm run smoke) — may download models on first run...\n");

@@ -30,6 +30,18 @@ process.env.LKHS_CAPTURE = "1"; // never capture our own maintenance sessions
 
 const log = (m) => { fs.mkdirSync(path.dirname(LOG), { recursive: true }); fs.appendFileSync(LOG, `[${new Date().toISOString()}] refresh: ${m}\n`); };
 
+// Module flags (same merge as config.ts: global <- repo-local overlay). The
+// voice loop only runs when a Mimesis-style profiles root is configured;
+// weekly reports can be opted out (reports.weekly: false).
+function cfg() {
+  const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return {}; } };
+  const base = read(path.join(os.homedir(), ".claude", "lkhs-capture-config.json"));
+  return { ...base, ...read(path.join(ROOT, ".claude", "lkhs.config.json")) };
+}
+const CFG = cfg();
+const VOICE_ON = !!(process.env.LKHS_MIMESIS_PROFILES || CFG.mimesisProfilesRoot);
+const WEEKLY_REPORT_ON = (CFG.reports?.weekly ?? true) !== false;
+
 function step(name, script, args = []) {
   log(`${name} start`);
   const r = spawnSync(process.execPath, ["--import", "tsx", script, ...args], { cwd: ROOT, encoding: "utf8", timeout: 30 * 60_000 });
@@ -47,7 +59,8 @@ fs.writeFileSync(LOCK, String(process.pid));
 
 try {
   step("hindsight (grade injections)", ".claude/bin/hindsight.ts");
-  step("preference miner (voice signal)", ".claude/bin/preference-miner.ts", ["--apply", "--hours", "26"]);
+  if (VOICE_ON) step("preference miner (voice signal)", ".claude/bin/preference-miner.ts", ["--apply", "--hours", "26"]);
+  else log("preference miner skipped (voice module off: no mimesisProfilesRoot)");
   step("persona scope floors", ".claude/bin/persona-scope.ts", ["--apply"]);
   step("sleep (reconcile)", ".claude/bin/sleep-reconcile.ts");
   step("reindex", ".claude/bin/vector-engine.ts");
@@ -63,13 +76,20 @@ try {
   step("state rollup (TODAY.md)", ".claude/bin/state-rollup.ts");
 
   if (new Date().getDay() === 0) { // Sunday
-    step("voice recalibration (learning curve)", ".claude/bin/voice-recalibrate.ts");
-    step("memory eval (weekly regression point)", ".claude/bin/eval-memory.ts");
+    if (VOICE_ON) step("voice recalibration (learning curve)", ".claude/bin/voice-recalibrate.ts");
+    // The eval question set is per-user data (built as the vault matures); a
+    // fresh install has none and the hygiene pass reports composite=n/a.
+    if (fs.existsSync(path.join(ROOT, ".claude", "memory", "eval", "memory_eval.jsonl")))
+      step("memory eval (weekly regression point)", ".claude/bin/eval-memory.ts");
+    else log("memory eval skipped (no question set yet — see docs/evals.md)");
     step("store hygiene (integrity + drift)", ".claude/bin/store-hygiene.ts");
-    step("weekly report", ".claude/bin/weekly-report.ts");
+    if (WEEKLY_REPORT_ON) step("weekly report", ".claude/bin/weekly-report.ts");
+    else log("weekly report skipped (reports.weekly: false)");
   }
 
-  step("scope-leak smoke", ".claude/bin/eval-scope-leak.ts", ["--smoke"]);
+  if (fs.existsSync(path.join(ROOT, "evals", "scope-leak", "probes.jsonl")))
+    step("scope-leak smoke", ".claude/bin/eval-scope-leak.ts", ["--smoke"]);
+  else log("scope-leak smoke skipped (no probe set yet — see docs/evals.md)");
 
   // Daemon recycle: gate latency degrades over multi-day uptime; a nightly
   // kill + detached restart caps it at 24h and keeps mornings warm.

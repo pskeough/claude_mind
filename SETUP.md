@@ -67,6 +67,29 @@ they didn't give):
 
 Validate every path in `ingestRoots` exists (`ls` each) before continuing.
 
+### Modules (ask, then write `.claude/lkhs.config.json` in the vault)
+
+The memory core is always on. Ask which optional modules they want and write a
+repo-local `.claude/lkhs.config.json` (see `.claude/lkhs.config.example.json`
+for every key and its documentation):
+
+- **Privacy profiles** (recommend ON — ships on by default): sessions can run
+  under a `work` or `public` profile that cannot retrieve private/personal
+  memory. Ask: "any project folders where sessions should be treated as
+  personal?" -> `etiquettePersonalProjects`. "Any folders where Claude should
+  only see professional memory?" -> add those folder names to the `work`
+  profile's `pin_cwds`.
+- **Voice loop** (needs a Mimesis-style voice system installed separately):
+  if they have one, set `mimesisProfilesRoot` to its profiles/ dir; the
+  nightly miner and weekly recalibration activate automatically. Otherwise
+  omit the key — everything voice-related stays dormant.
+- **Weekly report** (default ON): a Sunday rollup of their week from the
+  session ledger. `"reports": { "weekly": false }` opts out.
+- **Evals** (grow with use): the leak-probe set and the memory question set
+  are per-user data. Scaffold a starter probe set now from their answers —
+  see `docs/evals.md` — or skip; the nightly steps skip cleanly until the
+  files exist.
+
 ---
 
 ## Step 2 — Install the wiring (deterministic)
