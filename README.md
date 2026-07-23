@@ -1,6 +1,6 @@
 # Claude Mind
 
-A private memory brain for Claude Code that runs entirely on your Mac. It quietly
+A private memory brain for Claude Code that runs entirely on your computer. It quietly
 remembers your Claude Code sessions, reads your files and projects, and feeds the
 relevant bits back to Claude whenever you work, so you don't have to re-explain
 yourself. Nothing leaves your computer, and it runs on your Claude subscription (no
