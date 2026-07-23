@@ -15,6 +15,20 @@ API keys, no extra cost).
 - **Knows you.** It can synthesize a deep profile from your exported Claude chat
   history (optional), so Claude works the way you prefer from the first message.
 - **Stays live.** Background jobs keep it running and growing on their own.
+- **Controls what it reveals.** Every memory carries an audience scope (private,
+  personal, professional, public); sessions can run under a `work` or `public`
+  profile that structurally cannot retrieve more private memory, and an
+  adversarial leak harness (`npm run eval:scope`) proves it on your own data —
+  a content-audit mode even checks the retrieved text itself, not just labels.
+- **Learns your voice preferences** (optional, with a Mimesis-style voice
+  system): when you iterate on drafts written in your voice, the nightly miner
+  turns your in-chat feedback into recalibration signal — stylistic corrections
+  only, never factual ones — and the voice measurably converges on what you
+  actually keep.
+- **Watches its own health.** A weekly hygiene pass tracks retrieval quality as
+  a trend and alarms in your daily digest when it drifts, when indexed files go
+  missing on disk, or when the store loses internal consistency. A weekly
+  report summarizes your week from ledgers, never from vibes.
 - **A local console.** A web dashboard to explore the graph, timeline, your projects,
   and to chat with your own memory: http://127.0.0.1:7099
 
