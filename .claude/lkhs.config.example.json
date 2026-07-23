@@ -21,10 +21,34 @@
   "enableRerank": true,
   "rerankPool": 16,
   "rerankMaxChars": 400,
-  "rerankHigh": 0.30,
+  "rerankHigh": 0.45,
   "rerankLow": 0.02,
   "personaBoost": 0.15,
   "metaFloor": 0.5,
+
+  "_comment_precision": "Live-gate precision levers (tuned on a measured felt-quality pass; these defaults cut over-injection 40%->10% with recall unchanged). gateItemFloor: per-item keep floor; boostFloor: persona/fact boost only applies above this RAW rerank score; entityMidFloor: mid-band entity-name injects need this top score.",
+  "gateItemFloor": 0.25,
+  "boostFloor": 0.02,
+  "entityMidFloor": 0.20,
+
+  "_comment_scopes": "Audience scopes + profiles. Every profile has a ceiling on the privacy ladder clinical < private < personal < professional < public; retrieval under a profile only surfaces items at-or-above the ceiling. 'full' = everything except the clinical quarantine (the default; matches classic behavior). pin_cwds: project folder NAMES that auto-select the profile for sessions in those folders.",
+  "profiles": [
+    { "name": "full", "ceiling": "private", "pin_cwds": [] },
+    { "name": "work", "ceiling": "professional", "pin_cwds": [] },
+    { "name": "public", "ceiling": "public", "pin_cwds": [] }
+  ],
+  "_comment_chunkScopes": "Chunk scope overrides: layer defaults can be replaced per layer, and path prefixes (vault-relative, forward slashes) force a scope for specific files/subtrees (e.g. personal letters inside a professional-default layer).",
+  "chunkScopes": {
+    "layers": {},
+    "prefixes": []
+  },
+  "_comment_etiquette": "etiquettePersonalProjects: project folder names whose sessions are PERSONAL: their journals/cards scope private, work sessions keep them out of topical injections, and date-triggered reminders defer.",
+  "etiquettePersonalProjects": [],
+
+  "_comment_hygiene": "driftAlarm: the weekly store-hygiene pass alarms in TODAY.md when the offline eval composite drops by more than this between runs.",
+  "driftAlarm": 0.05,
+
+  "_comment_voice": "mimesisProfilesRoot: OPTIONAL absolute path to a Mimesis-style voice system's profiles/ dir. When set, the nightly preference miner writes mined accepts/edit-pairs there and weekly recalibration runs. Omit to run the memory system without the voice loop.",
 
   "_comment_capture": "exclude: absolute paths whose Claude Code sessions are NOT captured into memory (matched case-insensitively, OS-agnostic).",
   "exclude": [],

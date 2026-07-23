@@ -15,7 +15,8 @@ import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { processFileEmbeddings } from "./vector-engine";
-import { vaultRoot, summaryModel } from "./config";
+import { vaultRoot, summaryModel, claudeBin } from "./config";
+import { harvestFromSummary } from "./prospective";
 
 const VAULT_ROOT = vaultRoot(); // resolved via env > config.centralVault > derived
 const JOURNAL_DIR = path.join(VAULT_ROOT, "journal");
@@ -26,6 +27,7 @@ const MAX_INPUT_CHARS = 50_000;
 // (no summaries of summaries / compile runs).
 const AUTOMATION_SIGNATURES = [
   "archivist instructions", "BEGIN_SESSION_LOG", "BEGIN_PROJECT_DIGEST",
+  "BEGIN_CLUSTER_SOURCE", "BEGIN_PROJECT_CARD_SOURCE",
   "LKHS ambient compile pass", "LKHS pipeline:"
 ];
 // Model for summaries resolves via config.summaryModel() (env > config > default),
@@ -48,7 +50,7 @@ function projectSlug(cwd: string): string {
   return base.replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
-function redact(text: string): string {
+export function redact(text: string): string {
   return text
     .replace(/sk-[A-Za-z0-9_-]{16,}/g, "[REDACTED_KEY]")
     .replace(/AKIA[0-9A-Z]{16}/g, "[REDACTED_AWS]")
@@ -173,7 +175,8 @@ function summarize(ex: Extracted, project: string, dateStr: string): string {
     "**Files/artifacts touched:** bullets with paths.",
     "**Open threads / next steps:** bullets.",
     "**Entities:** comma-separated key topics, projects, and tools.",
-    "Constraints: under 250 words. Plain ASCII only, no em dashes, no arrows. Terse and factual, no preamble, no praise. Do not reproduce secrets or invent facts."
+    "**Intentions:** ONLY if the user stated a concrete forward-looking commitment (\"next time\", \"later\", \"when X happens\", \"remind me\", \"before the deadline\"). One bullet per commitment, formatted EXACTLY as '- [project:NAME] note' or '- [entity:PHRASE] note' or '- [date:YYYY-MM-DD] note' (pick the single best trigger). Omit this section entirely if none; never invent intentions.",
+    "Constraints: under 250 words (intentions excluded from the cap). Plain ASCII only, no em dashes, no arrows. Terse and factual, no preamble, no praise. Do not reproduce secrets or invent facts."
   ].join("\n");
 
   const stdinContent = [
@@ -186,7 +189,7 @@ function summarize(ex: Extracted, project: string, dateStr: string): string {
   ].join("\n");
 
   const model = summaryModel();
-  const res = spawnSync("claude", [
+  const res = spawnSync(`"${claudeBin()}"`, [
     "-p", instruction,
     "--model", model,
     "--output-format", "text"
@@ -227,9 +230,10 @@ function alreadyCaptured(sessionId: string, lineCount: number): boolean {
   return false;
 }
 
-// Cross-process write lock. The vector store is a single rewritten file, so two
-// captures running at once (e.g. a backfill sweep plus a real SessionEnd) would
-// corrupt it. Only the short write section is locked; the slow summary call is not.
+// Cross-process write lock. The vector store is SQLite (WAL) now, so concurrent
+// writes no longer corrupt it; the lock remains to serialize the journal/ledger
+// appends and avoid double-capturing the same session (e.g. a backfill sweep plus
+// a real SessionEnd). Only the short write section is locked; the slow summary call is not.
 const LOCK = path.join(JOURNAL_DIR, ".capture.lock");
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function acquireLock(timeoutMs = 120_000): Promise<boolean> {
@@ -247,7 +251,7 @@ async function acquireLock(timeoutMs = 120_000): Promise<boolean> {
 function releaseLock(): void { try { fs.unlinkSync(LOCK); } catch { /* gone */ } }
 
 export interface CaptureOpts { transcript: string; cwd: string; sessionId: string; event: string; }
-export type CaptureResult = "ok" | "skip-notranscript" | "skip-unchanged" | "skip-trivial" | "skip-locked";
+export type CaptureResult = "ok" | "skip-notranscript" | "skip-unchanged" | "skip-trivial" | "skip-locked" | "skip-duplicate";
 
 /** Capture one session transcript into the journal + vector store. Reusable by the sweep. */
 export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> {
@@ -279,6 +283,30 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
   const timeStr = sessionDate.toISOString().slice(11, 16);
   const summary = summarize(ex, project, dateStr);
 
+  // P3 novelty gate (SAGE-style): a summary near-identical to an existing chunk of the
+  // SAME project's journal is a duplicate capture (re-run automation, repeated identical
+  // sessions). Ledger it so the sweep stops retrying, but skip the append + embed so the
+  // pool doesn't inflate with recaps. 0.95 cosine on bge-small is near-verbatim.
+  try {
+    const { queryVectorStore } = await import("./vector-query");
+    const probe = await queryVectorStore(summary.slice(0, 800), 3);
+    const dup = probe.find((h: any) => h.layer === "session" && h.file === `journal/${project}.md` && h.score >= 0.95);
+    if (dup) {
+      if (await acquireLock()) {
+        try {
+          fs.appendFileSync(LEDGER, JSON.stringify({
+            sessionId, project, cwd, event, lineCount, at: now.toISOString(),
+            sessionStart: ex.firstTs || null, sessionEnd: ex.lastTs || null,
+            title: toAscii(ex.title || ex.firstUser || "session").slice(0, 80),
+            note: `duplicate-of-existing (cos ${dup.score.toFixed(3)})`, transcript: path.resolve(transcript)
+          }) + "\n", "utf-8");
+        } finally { releaseLock(); }
+      }
+      log(`capture:skip near-duplicate ${sessionId.slice(0, 8)} cos=${dup.score.toFixed(3)}`);
+      return "skip-duplicate";
+    }
+  } catch (e: any) { log(`capture:novelty-gate-skip ${e.message}`); /* gate failure never blocks capture */ }
+
   if (!(await acquireLock())) { log(`capture:skip lock-timeout ${sessionId.slice(0, 8)}`); return "skip-locked"; }
   try {
     fs.mkdirSync(JOURNAL_DIR, { recursive: true });
@@ -301,9 +329,17 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
       sessionId, project, cwd, event, lineCount,
       at: now.toISOString(),                              // when we captured
       sessionStart: ex.firstTs || null, sessionEnd: ex.lastTs || null, // when it happened
-      title
+      title,
+      transcript: path.resolve(transcript)                // raw .jsonl, for fetch_transcript
     }) + "\n", "utf-8");
   } finally { releaseLock(); }
+
+  // P2 prospective memory: lift forward-looking commitments out of the summary into
+  // the trigger store, so they fire when their condition arrives instead of dying here.
+  try {
+    const intents = harvestFromSummary(summary, sessionId.slice(0, 8));
+    if (intents.length) log(`capture:intentions +${intents.length} ${intents.map(i => i.when.type + ":" + i.when.value).join(", ")}`);
+  } catch (e: any) { log(`capture:intentions-fail ${e.message}`); }
 
   log(`capture:ok ${project} session=${sessionId.slice(0, 8)} event=${event}`);
   return "ok";

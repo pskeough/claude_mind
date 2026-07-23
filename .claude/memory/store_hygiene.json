@@ -1,0 +1,23 @@
+{
+ "updated": "2026-07-23T09:28:29.780Z",
+ "driftAlarm": 0.05,
+ "alarms": [],
+ "trend": [
+  {
+   "ts": "2026-07-23",
+   "eval_composite": null,
+   "eval_recall": null,
+   "eval_run": null,
+   "eval_drop": null,
+   "unresolved": 0,
+   "new_orphans": null,
+   "dup_extra_chunks": 0,
+   "dup_within_file": 0,
+   "chunks_no_vec": 0,
+   "vecs_no_chunk": 0,
+   "facts_db": 0,
+   "facts_jsonl": 0,
+   "facts_unscoped": 0
+  }
+ ]
+}

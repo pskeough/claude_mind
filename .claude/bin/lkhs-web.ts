@@ -18,19 +18,25 @@ import * as path from "path";
 import { knn, stats, layerStats, allFiles, fileChunks, getDb } from "./store";
 import { rerank, warm as warmReranker } from "./rerank";
 import { canonKey } from "./text-normalize";
-import { config, vaultRoot, webPort, chatModel } from "./config";
+import {
+  vaultRoot, webPort, chatModel, rerankHigh, rerankLow, metaFloor, identityFloor,
+  RECALL_RE, META_RE, IDENTITY_RE,
+} from "./config";
 
 const VAULT = vaultRoot();
 const WEB = path.join(VAULT, ".claude", "web");
-const C: any = config();
 const PORT = webPort();
-const RERANK_HIGH = Number(C.rerankHigh ?? 0.30);
-const RERANK_LOW = Number(C.rerankLow ?? 0.02);
-const META_FLOOR = Number(C.metaFloor ?? 0.5);
+// Gate constants + intent regexes come from config.ts (single source of truth,
+// shared with lkhs-daemon.ts) so the retrieval inspector reflects the real gate.
+const RERANK_HIGH = rerankHigh();
+const RERANK_LOW = rerankLow();
+const META_FLOOR = metaFloor();
+const IDENTITY_FLOOR = identityFloor();
 const CHAT_MODEL = chatModel();
 
-const RECALL = /\b(did i|have i|how did|where did|when did|did we|have we|last time|previously|earlier|we discussed|we built|i already|i built|i wrote|i made|i found|i created|i set up|i decided|remember|recall|my notes|my previous|my last|my earlier)\b/i;
-const META = /\b(what am i working on|what are my|overview of|across (all )?my|my (\w+ )?(projects|research|writing|work|notes)|themes? (across|in|of|for)|state of my|summar(ize|y) of (my|all)|big picture)\b/i;
+const RECALL = RECALL_RE;
+const META = META_RE;
+const IDENTITY = IDENTITY_RE;
 
 // ---- models ----------------------------------------------------------------
 let _model: Promise<FlagEmbedding> | null = null;
@@ -60,8 +66,23 @@ async function pipeline(query: string, topK = 6): Promise<any> {
   const qv = await embedQuery(query);
   if (qv.length === 0) return { query, route: "none", candidates: [], injected: [], decision: { inject: false, reason: "empty-query" } };
 
+  // Identity / self queries route to the persona layer first (mirrors the daemon's
+  // identityGate). Falls through to the normal pipeline if nothing clears the floor.
+  if (IDENTITY.test(query)) {
+    const hits = knn(qv, 8, { layers: ["persona"] });
+    const injected = hits.filter(h => h.score >= IDENTITY_FLOOR).slice(0, topK);
+    if (injected.length > 0) {
+      return {
+        query, route: "identity", signal: "identity",
+        candidates: hits.map(h => ({ file: h.file, layer: h.layer, cosine: Number(h.score.toFixed(3)) })),
+        injected: injected.map(h => ({ file: h.file, layer: h.layer, score: Number(h.score.toFixed(3)), text: h.text })),
+        decision: { inject: true, reason: "identity" },
+      };
+    }
+  }
+
   if (META.test(query)) {
-    const hits = knn(qv, 12, { layers: ["theme", "card"] });
+    const hits = knn(qv, 12, { layers: ["persona", "theme", "card"] });
     const injected = hits.filter(h => h.score >= META_FLOOR).slice(0, topK);
     return {
       query, route: "meta", signal: "meta-overview",
@@ -71,7 +92,7 @@ async function pipeline(query: string, topK = 6): Promise<any> {
     };
   }
 
-  const pool = knn(qv, 24);
+  const pool = knn(qv, 24, { exclude: ["skill"] }); // skill-router layer is not a memory source
   const ranked = await rerank(query, pool, h => h.text.slice(0, 400));
   const top = ranked[0]?.score ?? 0;
   let inject: boolean, reason: string;
@@ -117,7 +138,7 @@ function overview() {
   const s = stats(); const layers = layerStats();
   const sweep = (() => { try { return JSON.parse(fs.readFileSync(path.join(VAULT, "journal", "_sessions.jsonl"), "utf-8").trim().split("\n").filter(Boolean).pop()!); } catch { return null; } })();
   let gateLog: string[] = [];
-  try { gateLog = fs.readFileSync(path.join(VAULT, ".claude", "logs", "ambient.log"), "utf-8").split("\n").filter(l => l.includes("daemon:gate:inject") || l.includes("daemon:store loaded") === false && l.includes("gate:inject")).slice(-8).map(l => l.replace(/^\[[^\]]+\] daemon:gate:inject /, "")); } catch { /* */ }
+  try { gateLog = fs.readFileSync(path.join(VAULT, ".claude", "logs", "ambient.log"), "utf-8").split("\n").filter(l => l.includes("gate:inject") && !l.includes("daemon:store loaded")).slice(-8).map(l => l.replace(/^\[[^\]]+\] daemon:gate:inject /, "")); } catch { /* */ }
   let graph: any = {};
   try { const g = JSON.parse(fs.readFileSync(path.join(VAULT, "graph", "graph.json"), "utf-8")); graph = { nodes: g.nodes.length, edges: g.edges.length, communities: g.communities.length }; } catch { /* */ }
   return {

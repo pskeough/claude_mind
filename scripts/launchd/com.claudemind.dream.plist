@@ -6,10 +6,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__NODE__</string>
-    <string>--import</string>
-    <string>tsx</string>
-    <string>.claude/bin/pipelines.ts</string>
-    <string>auto_dream</string>
+    <string>scripts/refresh.mjs</string>
   </array>
   <key>WorkingDirectory</key><string>__VAULT__</string>
   <key>StartCalendarInterval</key>

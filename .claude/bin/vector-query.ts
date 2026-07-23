@@ -7,10 +7,15 @@
  * model cold on each invocation and is meant for manual one-off lookups.
  */
 import { FlagEmbedding, EmbeddingModel } from "fastembed";
-import { knn } from "./store";
+import { hybridSearch } from "./store";
 import { rerank } from "./rerank";
+import { factBoost, lexicalRrf, rrfK } from "./config";
 
-export interface QueryHit { filePath: string; text: string; score: number; layer?: string }
+export interface QueryHit {
+  filePath: string; text: string; score: number; layer?: string;
+  /** set only on embedded-fact hits (layer "fact"): the rebuild-stable fact key */
+  factKey?: string;
+}
 
 let _model: any = null;
 async function getModel() {
@@ -27,7 +32,11 @@ export async function queryVectorStore(query: string, topK = 5): Promise<QueryHi
     break;
   }
   if (queryVec.length === 0) return [];
-  return knn(queryVec, topK).map(h => ({ filePath: h.file, text: h.text, score: h.score, layer: h.layer }));
+  // P4a hybrid pool (store.hybridSearch): dense knn prose + factKnn facts as before
+  // (skill layer excluded; quarantine + validity enforced at the vector layer; facts
+  // carry the structural boost), with FTS5 lexical lists RRF-fused in when enabled.
+  return hybridSearch(queryVec, query, topK, { factK: topK, exclude: ["skill"], factBoost: factBoost(), lexical: lexicalRrf(), rrfK: rrfK() })
+    .map(h => ({ filePath: h.file, text: h.text, score: h.score, layer: h.layer, factKey: h.factKey }));
 }
 
 if (require.main === module) {

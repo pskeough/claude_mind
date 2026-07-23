@@ -6,7 +6,9 @@
  *   com.claudemind.daemon   keepalive  warm retrieval daemon (port from config)
  *   com.claudemind.watcher  keepalive  ambient file watcher + auto wiki-compile
  *   com.claudemind.sweep    hourly     capture/backfill recent Claude Code sessions
- *   com.claudemind.dream    daily 04:00  rebuild cards/graph/themes/moc (incremental)
+ *   com.claudemind.dream    daily 04:00  full refresh (scripts/refresh.mjs: hindsight,
+ *                           miner, scope floors, reconcile, rebuilds, rollups,
+ *                           Sunday evals/report, leak smoke, daemon recycle)
  *
  * Fills the plist templates in scripts/launchd/ with this machine's real node + claude
  * paths and the vault path, writes them to ~/Library/LaunchAgents, and (re)loads them.

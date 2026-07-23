@@ -15,6 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { captureSession } from "./capture-session";
+import { vaultRoot } from "./config";
 
 const PROJECTS_DIR = path.join(process.env.USERPROFILE || process.env.HOME || "", ".claude", "projects");
 const CONFIG = path.join(process.env.USERPROFILE || process.env.HOME || "", ".claude", "lkhs-capture-config.json");
@@ -22,33 +23,61 @@ const CONFIG = path.join(process.env.USERPROFILE || process.env.HOME || "", ".cl
 function has(flag: string): boolean { return process.argv.includes(`--${flag}`); }
 function val(flag: string): string | undefined { const i = process.argv.indexOf(`--${flag}`); return i >= 0 ? process.argv[i + 1] : undefined; }
 
+// Normalize both sides to forward slashes + lowercase so exclude matching is
+// OS-independent (config may hold either separator style).
+const normPath = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
 function loadExclude(): string[] {
   try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG, "utf-8"));
-    return (cfg.exclude || []).map((e: string) => e.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase());
+    return (cfg.exclude || []).map((e: string) => normPath(e));
   } catch { return []; }
 }
 
 function excluded(cwd: string, list: string[]): boolean {
-  const c = cwd.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-  return list.some(ex => ex && (c === ex || c.startsWith(ex + "\\")));
+  const c = normPath(cwd);
+  return list.some(ex => ex && (c === ex || c.startsWith(ex + "/")));
 }
 
-/** Read the cwd recorded inside a transcript. Only reads the file head (cwd
- *  appears on the first turn), so large transcripts are not loaded whole. */
-function transcriptCwd(file: string): string {
-  let head = "";
+/** Read a transcript's head once (cwd is on the first turn; automation markers
+ *  are in the first user message), so large transcripts are not loaded whole. */
+function transcriptHead(file: string): string {
   const fd = fs.openSync(file, "r");
   try {
     const buf = Buffer.alloc(65536);
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    head = buf.toString("utf-8", 0, n);
+    return buf.toString("utf-8", 0, n);
   } finally { fs.closeSync(fd); }
+}
+
+function transcriptCwd(head: string): string {
   for (const l of head.split("\n")) {
     if (!l.trim()) continue;
     try { const o = JSON.parse(l); if (o.cwd) return o.cwd; } catch { /* partial last line */ }
   }
   return "unknown";
+}
+
+// LKHS's own `claude -p` automation (judges, evals, miners, summarizers,
+// ambient compiles) must not enter the ledger as sessions: it polluted the
+// session ledger with hundreds of micro-entries (2026-07-23 weekly report:
+// 225 in one week). The spawns set LKHS_CAPTURE=1, but env is invisible in
+// the transcript — the STABLE INSTRUCTION PHRASES are the durable signature.
+// The user's own headless -p sessions match none of these and stay captured
+// (they are exactly what the sweep exists to cover).
+const AUTOMATION_RE = /output ONLY the requested JSON|BEGIN_FACTS|BEGIN_CONVERSATION|BEGIN_SESSION_LOG|BEGIN_PROJECT_DIGEST|LKHS ambient compile|archivist instructions|injected by a personal memory system under a privacy profile/;
+function isAutomation(head: string): boolean {
+  for (const l of head.split("\n")) {
+    if (!l.trim()) continue;
+    try {
+      const o = JSON.parse(l);
+      if (o.type !== "user") continue;
+      const c = o.message?.content;
+      const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((b: any) => b?.text || "").join("\n") : "";
+      return AUTOMATION_RE.test(text);   // decide on the FIRST user turn only
+    } catch { /* partial line */ }
+  }
+  return false;
 }
 
 async function main() {
@@ -62,7 +91,7 @@ async function main() {
   const exclude = loadExclude();
 
   // Sweep singleton: never let two sweeps run at once (would double-capture).
-  const SWEEPLOCK = path.join(process.cwd(), "journal", ".sweep.lock");
+  const SWEEPLOCK = path.join(vaultRoot(), "journal", ".sweep.lock");
   if (!dry) {
     fs.mkdirSync(path.dirname(SWEEPLOCK), { recursive: true });
     try { fs.writeFileSync(SWEEPLOCK, String(process.pid), { flag: "wx" }); }
@@ -93,15 +122,17 @@ async function main() {
     }
   }
 
-  let considered = 0, captured = 0, skipped = 0, excl = 0, active = 0;
+  let considered = 0, captured = 0, skipped = 0, excl = 0, active = 0, automation = 0;
   for (const file of transcripts) {
     const mtime = fs.statSync(file).mtimeMs;
     if (mtime > settleCutoff) { active++; continue; } // still being written; let it settle
     if (!all && mtime < cutoff) continue;
     considered++;
 
-    const cwd = transcriptCwd(file);
+    const head = transcriptHead(file);
+    const cwd = transcriptCwd(head);
     if (excluded(cwd, exclude)) { excl++; continue; }
+    if (isAutomation(head)) { automation++; continue; } // LKHS's own claude -p runs
     const sessionId = path.basename(file, ".jsonl");
 
     if (dry) {
@@ -115,7 +146,7 @@ async function main() {
   }
 
   if (!dry) { try { fs.unlinkSync(SWEEPLOCK); } catch { /* gone */ } }
-  console.log(`\nSweep done. considered=${considered} captured=${captured} skipped=${skipped} excluded=${excl} active=${active} (window: ${all ? "all" : hours + "h"})`);
+  console.log(`\nSweep done. considered=${considered} captured=${captured} skipped=${skipped} excluded=${excl} automation=${automation} active=${active} (window: ${all ? "all" : hours + "h"})`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

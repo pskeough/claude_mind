@@ -35,7 +35,7 @@ Steps:
 2. Read VAULT-INDEX.md to map existing entities and relationships.
 3. For the target raw file(s):
    a. Extract primary entities, claims, dates, and references.
-   b. Use the vector store (.claude/memory/vector_store.json) to find semantically related existing wiki/ notes — but DO NOT load every wiki file; consult VAULT-INDEX.md namespaces first.
+   b. Use the vector store (query via: npx tsx .claude/bin/vector-query.ts "<q>") to find semantically related existing wiki/ notes — but DO NOT load every wiki file; consult VAULT-INDEX.md namespaces first.
    c. Propose: new wiki/ files for unseen entities; edits to existing wiki/ files for matching entities.
    d. Add bidirectional [[link]] syntax connecting new entities to neighbors found via vector + graph.
 4. Generate a TRIAGE_REPORT with: proposed_creations, proposed_edits, contradictions_detected (use [!contradiction] callout syntax), provenance hashes.
@@ -78,13 +78,34 @@ async function main() {
   const prompt = PROMPTS[pipeline](args);
   await log(`pipeline:start ${pipeline} ${args.join(" ")}`);
 
+  // Tight allowlist instead of --dangerously-skip-permissions, sized to what the
+  // pipeline prompts actually do: read context, run vector-query, and write only
+  // to wiki/, VAULT-INDEX.md, MEMORY.md, domain tiles, and the ambient log.
+  // core_profile.json Edit is included solely because auto_dream updates the
+  // _meta.updated field (the prompt forbids touching anything else in that file).
+  const ALLOWED_TOOLS = [
+    "Read", "Glob", "Grep",
+    "Bash(npx tsx .claude/bin/vector-query.ts:*)",
+    "Edit(wiki/**)", "Write(wiki/**)",
+    "Edit(VAULT-INDEX.md)", "Write(VAULT-INDEX.md)",
+    "Edit(.claude/memory/MEMORY.md)",
+    "Edit(.claude/memory/domains/**)", "Write(.claude/memory/domains/**)",
+    "Edit(.claude/memory/core_profile.json)",
+    "Edit(.claude/logs/**)", "Write(.claude/logs/**)",
+  ].join(",");
+
+  // Prompt goes via stdin, not argv: spawn with shell:true concatenates args
+  // unescaped, so a multiline -p argument is truncated at the first newline and
+  // any flag after it is silently dropped. Flags stay simple single tokens (the
+  // allowlist is quoted for cmd because Bash(...) contains spaces).
   const child = spawn("claude", [
-    "-p", prompt,
+    "-p",
     "--fork-session",
-    "--dangerously-skip-permissions",
+    "--allowedTools", `"${ALLOWED_TOOLS}"`,
     "--max-budget-usd", MAX_BUDGET_USD,
     "--output-format", "text"
-  ], { cwd: VAULT_ROOT, stdio: "inherit", shell: true });
+  ], { cwd: VAULT_ROOT, stdio: ["pipe", "inherit", "inherit"], shell: true });
+  child.stdin?.end(prompt + "\n");
 
   child.on("exit", async (code) => {
     await log(`pipeline:end ${pipeline} code=${code}`);

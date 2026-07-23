@@ -126,22 +126,44 @@ You MUST take file actions with the Write/Edit tools, not just report. Steps:
 End by printing TRIAGE_REPORT: <files created>, <files edited>, <links added>.`;
 }
 
+// Tight allowlist instead of --dangerously-skip-permissions. Sized to what the
+// compile prompt actually asks for: read context files, run vector-query for
+// retrieval, and write only to wiki/, VAULT-INDEX.md, MEMORY.md, domain tiles,
+// and the ambient log. Anything else (arbitrary Bash, edits to core_profile.json,
+// raw/, code) is denied by omission, so a prompt-injected raw/ file cannot make
+// the headless agent act outside the wiki-compile surface.
+const COMPILE_ALLOWED_TOOLS = [
+  "Read", "Glob", "Grep",
+  "Bash(npx tsx .claude/bin/vector-query.ts:*)",
+  "Edit(wiki/**)", "Write(wiki/**)",
+  "Edit(VAULT-INDEX.md)", "Write(VAULT-INDEX.md)",
+  "Edit(.claude/memory/MEMORY.md)",
+  "Edit(.claude/memory/domains/**)", "Write(.claude/memory/domains/**)",
+  "Edit(.claude/logs/**)", "Write(.claude/logs/**)",
+].join(",");
+
 function runCompile(files: string[]): void {
   compiling = true;
   compileCount += 1;
   lastCompileAt = Date.now();
 
+  // The prompt (multiline) goes via stdin, NOT as an argv token: spawn with
+  // shell:true concatenates args unescaped, so a multiline -p argument was being
+  // truncated at the first newline and every flag after it silently dropped.
+  // Flags stay simple single tokens (the allowlist is quoted for cmd because
+  // Bash(...) contains spaces).
   const args = [
-    "-p", buildPrompt(files),
-    "--append-system-prompt", RULES,
-    "--dangerously-skip-permissions",
+    "-p",
+    "--allowedTools", `"${COMPILE_ALLOWED_TOOLS}"`,
     "--output-format", "text"
   ];
   if (MAX_BUDGET_USD.toLowerCase() !== "off") args.push("--max-budget-usd", MAX_BUDGET_USD);
 
   writeLog(`compile:start #${compileCount} ${files.length} file(s)`);
-  // stdin 'ignore' so claude -p does not wait 3s for piped input that never comes.
-  const child = spawn("claude", args, { cwd: VAULT_ROOT, shell: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("claude", args, { cwd: VAULT_ROOT, shell: true, stdio: ["pipe", "pipe", "pipe"] });
+  // Rules + task both ride the stdin prompt (they used to be --append-system-prompt,
+  // which the same newline truncation was destroying).
+  child.stdin?.end(`${RULES}\n\n${buildPrompt(files)}\n`);
 
   let out = "";
   child.stdout?.on("data", d => { out += d.toString(); });

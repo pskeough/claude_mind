@@ -3,7 +3,7 @@
  *
  * Per project, synthesizes ONE current state card from its recent session journal
  * entries + its library directory digest. This is the layer that makes broad
- * questions answerable ("where did I leave project X", "what am I working on"):
+ * questions answerable ("where did I leave PsychBench", "what am I working on"):
  * raw chunks and per-session summaries can't answer those; a synthesized current
  * state can. Cards are embedded (layer "card") so they rank in retrieval, and the
  * SessionStart hook injects the card for the project you're opening.

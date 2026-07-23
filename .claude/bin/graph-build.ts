@@ -132,7 +132,7 @@ function ingestLibrary() {
 }
 
 // ---- ingest persona (the user as a first-class hub) -----------------------
-// The user is the center of their own knowledge graph: connect him to the people in
+// The hub user is the center of their own knowledge graph: connect them to the people in
 // his life (persona/entities.json) and to every concept/project his persona docs
 // link to. The clinical tier is deliberately excluded from the graph.
 function ingestPersona() {
@@ -160,7 +160,7 @@ function ingestPersona() {
       for (const target of links(content)) {
         const tid = norm(target);
         addNode(tid, "concept", target);
-        addEdge(HUB, tid, 1, "EXTRACTED"); // user -> the concepts/projects they are about
+        addEdge(HUB, tid, 1, "EXTRACTED"); // hub -> the concepts/projects they are about
       }
     }
   }

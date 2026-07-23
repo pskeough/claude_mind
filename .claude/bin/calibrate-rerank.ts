@@ -10,16 +10,14 @@
 import { queryVectorStore } from "./vector-query";
 import { rerank, warm } from "./rerank";
 
-// Replace these with a handful of YOUR own questions (about your projects, decisions,
-// and history) to calibrate the rerank gate against your real corpus.
 const PERSONAL = [
-  "what did I conclude in my most recent project",
-  "how did I set up the data ingestion pipeline",
-  "summarize the main findings from my last analysis",
-  "what is the architecture of the memory system",
-  "what did I decide about the open design question",
-  "what are the open threads on my current writing project",
-  "what experiments did I run and what were the results",
+  "what did I conclude about sycophancy severity scoring",
+  "how did I set up the Tai RAG ingestion",
+  "summarize the demographic bias findings from my research project",
+  "what is the architecture of the LKHS memory system",
+  "what did I decide about the abliteration active suppression hypothesis",
+  "what are the open threads on my novel draft",
+  "what models did I run for the Train LLM experiments",
 ];
 const GENERAL = [
   "what is the capital of France",

@@ -11,15 +11,34 @@
  *
  *   tsx migrate-store.ts          # migrate into the real db
  *   tsx migrate-store.ts --dry    # parse + count only, no writes
+ *   tsx migrate-store.ts --schema # P2 schema evolution only (facts + chunk meta), idempotency-verified
  */
 import * as fs from "fs";
 import * as path from "path";
-import { upsertFile, stats, sha256, getDb, storedFileHash } from "./store";
+import { upsertFile, stats, sha256, getDb, storedFileHash, migrateSchema, factStats } from "./store";
 import { vaultRoot } from "./config";
 
 const VAULT_ROOT = vaultRoot();
 const JSON_PATH = process.env.LKHS_JSON_PATH || path.join(VAULT_ROOT, ".claude", "memory", "vector_store.json");
 const DRY = process.argv.includes("--dry");
+const SCHEMA = process.argv.includes("--schema");
+
+/**
+ * P2 migration path: apply the additive fact/meta schema (migrateSchema lives in
+ * store.ts and also runs on every getDb(), so any process self-heals) and prove
+ * idempotency by running it a second time and asserting it changed nothing.
+ */
+function schemaMigrate() {
+  const db = getDb(); // getDb already ran migrateSchema once during open
+  const first = migrateSchema(db);
+  const second = migrateSchema(db);
+  const changedTwice = second.addedChunkMeta || second.createdFact || second.createdVecFacts || second.createdFtsChunks || second.createdFtsFacts || second.addedFactScope;
+  console.log("schema state after open :", JSON.stringify(first), "(false everywhere = already migrated)");
+  console.log("idempotency re-run      :", JSON.stringify(second), changedTwice ? "FAIL: second run mutated schema" : "OK: no-op");
+  const fs2 = factStats();
+  console.log(`fact table: ${fs2.total} facts (${fs2.clinical} clinical)`);
+  if (changedTwice) process.exit(1);
+}
 
 interface JsonChunk { text: string; vector: number[]; h?: string }
 interface JsonRec { filePath: string; hash: string; chunks: JsonChunk[] }
@@ -39,6 +58,7 @@ function readJson(): Record<string, JsonRec> {
 }
 
 function main() {
+  if (SCHEMA) { schemaMigrate(); return; }
   if (!fs.existsSync(JSON_PATH)) { console.error("No JSON store at", JSON_PATH); process.exit(1); }
   console.log(`Reading ${JSON_PATH} ...`);
   const obj = readJson();
