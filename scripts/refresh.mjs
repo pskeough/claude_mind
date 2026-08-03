@@ -74,6 +74,10 @@ try {
   step("salience", ".claude/bin/salience.ts");
   step("rehearsal (lane packs)", ".claude/bin/build-rehearsal.ts");
   step("state rollup (TODAY.md)", ".claude/bin/state-rollup.ts");
+  // Must follow the final rollup: the brief is a reader over the TODAY.md and
+  // salience.md this run just produced. Self-gates on briefs.morning, so it is
+  // a no-op (exit 0) when the module is off.
+  step("morning brief", "scripts/morning-brief.mjs");
 
   if (new Date().getDay() === 0) { // Sunday
     if (VOICE_ON) step("voice recalibration (learning curve)", ".claude/bin/voice-recalibrate.ts");

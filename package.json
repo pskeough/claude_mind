@@ -52,6 +52,7 @@
   "hygiene": "tsx .claude/bin/store-hygiene.ts",
   "prune:stale": "tsx .claude/bin/prune-stale.ts",
   "refresh": "node scripts/refresh.mjs",
+  "brief": "node scripts/morning-brief.mjs",
   "import:chats": "tsx .claude/bin/normalize-chat-export.ts"
  },
  "keywords": [],

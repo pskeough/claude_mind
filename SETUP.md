@@ -86,6 +86,15 @@ for every key and its documentation):
   omit the key — everything voice-related stays dormant.
 - **Weekly report** (default ON): a Sunday rollup of their week from the
   session ledger. `"reports": { "weekly": false }` opts out.
+- **Morning brief** (default OFF): the nightly salience judgment already runs
+  and lands in `TODAY.md`, but it only surfaces when they open Claude Code.
+  Turning this on renders it as a page and pushes it each morning — three
+  things with their sources, deadlines, active lanes and next actions, and
+  anything waiting on their decision. Worth offering to anyone who will not
+  reliably start a session first thing. Enable with
+  `"briefs": { "morning": true, "mode": "notify" }`; `mode` is `notify`
+  (macOS banner), `open` (opens the page), `both`, or `file`. Preview it any
+  time with `npm run brief -- --force --open`.
 - **Evals** (grow with use): the leak-probe set and the memory question set
   are per-user data. Scaffold a starter probe set now from their answers —
   see `docs/evals.md` — or skip; the nightly steps skip cleanly until the
