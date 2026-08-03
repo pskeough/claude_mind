@@ -6,6 +6,7 @@
  "scripts": {
   "preflight": "node scripts/preflight.mjs",
   "doctor": "node scripts/doctor.mjs",
+  "upgrade": "node scripts/upgrade.mjs",
   "setup:wiring": "node scripts/finalize-setup.mjs",
   "install:hooks": "node scripts/install-global-hooks.mjs",
   "install:mcp": "node scripts/register-mcp.mjs",
