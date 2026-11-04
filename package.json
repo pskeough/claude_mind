@@ -7,6 +7,7 @@
     "preflight": "node scripts/preflight.mjs",
     "doctor": "node scripts/doctor.mjs",
     "budget": "tsx .claude/bin/budget.ts",
+    "fetch:model": "node scripts/fetch-model.mjs",
     "upgrade": "node scripts/upgrade.mjs",
     "setup:wiring": "node scripts/finalize-setup.mjs",
     "install:hooks": "node scripts/install-global-hooks.mjs",

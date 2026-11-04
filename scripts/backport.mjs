@@ -165,7 +165,11 @@ const GATED = new Set(["llm-pool.ts", "ambient-watcher.ts", "pipelines.ts"]);
 function addConfigImport(src, name, f) {
   const rx = /import \{([^}]*)\} from "\.\/config";/;
   const m = src.match(rx);
-  if (!m) throw new Error(`${f}: needs ${name} but has no ./config import to extend`);
+  if (!m) {
+    const first = src.match(/^import [^\n]*;\n/m);
+    if (!first) throw new Error(`${f}: needs ${name} but has no import block to extend`);
+    return src.replace(first[0], `${first[0]}import { ${name} } from "./config";\n`);
+  }
   if (new RegExp(`\\b${name}\\b`).test(m[1])) return src;
   return src.replace(rx, `import {${m[1].replace(/\s*$/, "")}, ${name} } from "./config";`);
 }
@@ -190,6 +194,12 @@ function forkPatch(f, s) {
     s = addConfigImport(s, "llmSpawnSync", f);
   }
   SYNC_CLAUDE.lastIndex = 0;
+  // Anchor fastembed's model cache to the vault (see config.ts embedCacheDir).
+  const EMBED_INIT = /FlagEmbedding\.init\(\{ model: EmbeddingModel\.BGESmallENV15 \}\)/g;
+  if (f.endsWith(".ts") && EMBED_INIT.test(s)) {
+    s = s.replace(EMBED_INIT, "FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() })");
+    s = addConfigImport(s, "embedCacheDir", f);
+  }
   return s;
 }
 

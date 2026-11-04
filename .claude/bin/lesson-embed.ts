@@ -28,6 +28,7 @@
  * whole store rather than a special case for this layer.
  */
 import * as fs from "fs";
+import { embedCacheDir } from "./config";
 import { getDb, upsertFile, deleteFile, sha256, allFiles } from "./store";
 import { currentLessons, writeTriggerIndex, Lesson } from "./lessons";
 
@@ -70,7 +71,7 @@ async function main() {
   for (const f of stale) deleteFile(f);
 
   const { FlagEmbedding, EmbeddingModel } = await import("fastembed");
-  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 });
+  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() });
   const docs = lessons.map(docOf);
   const vecs: number[][] = [];
   for await (const batch of model.embed(docs)) for (const v of batch) vecs.push(Array.from(v as ArrayLike<number>));

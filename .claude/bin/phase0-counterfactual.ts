@@ -33,7 +33,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { vaultRoot, memDir } from "./config";
+import { vaultRoot, memDir, embedCacheDir } from "./config";
 import { llmMap, parseJson, LlmJob } from "./llm-pool";
 
 const ARG = (f: string, d: number) => { const i = process.argv.indexOf(f); return i >= 0 ? Number(process.argv[i + 1]) : d; };
@@ -159,7 +159,7 @@ async function buildPairs(lessons: Lesson[], corrs: Corr[]): Promise<Pair[]> {
   // part of what is being evaluated, so it belongs in the setup. The control arm is
   // what keeps this honest.
   const { FlagEmbedding, EmbeddingModel } = await import("fastembed");
-  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 });
+  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() });
   const embed = async (texts: string[]): Promise<number[][]> => {
     const out: number[][] = [];
     for await (const batch of model.embed(texts)) for (const v of batch) out.push(Array.from(v as ArrayLike<number>));

@@ -9,7 +9,7 @@
 import { FlagEmbedding, EmbeddingModel } from "fastembed";
 import { hybridSearch } from "./store";
 import { rerank } from "./rerank";
-import { factBoost, lexicalRrf, rrfK } from "./config";
+import { factBoost, lexicalRrf, rrfK, embedCacheDir } from "./config";
 
 export interface QueryHit {
   filePath: string; text: string; score: number; layer?: string;
@@ -19,7 +19,7 @@ export interface QueryHit {
 
 let _model: any = null;
 async function getModel() {
-  if (!_model) _model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 });
+  if (!_model) _model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() });
   return _model;
 }
 

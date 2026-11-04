@@ -89,6 +89,13 @@ export function dbPath(): string {
 export function cacheDir(): string {
   return process.env.LKHS_CACHE_DIR || path.join(vaultRoot(), "local_cache", "transformers");
 }
+/** fastembed's model folder (bge-small). Anchored to the vault: fastembed defaults to
+ *  ./local_cache relative to the CURRENT directory, so a job or hook started anywhere
+ *  else misses the cached model and tries a download bucket that now refuses requests.
+ *  scripts/fetch-model.mjs fills it on a fresh clone. */
+export function embedCacheDir(): string {
+  return process.env.LKHS_EMBED_CACHE_DIR || path.join(vaultRoot(), "local_cache");
+}
 export function logFile(): string { return path.join(vaultRoot(), ".claude", "logs", "ambient.log"); }
 
 // ---- ports ----------------------------------------------------------------

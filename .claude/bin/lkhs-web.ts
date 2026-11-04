@@ -20,7 +20,7 @@ import { rerank, warm as warmReranker } from "./rerank";
 import { canonKey } from "./text-normalize";
 import {
   vaultRoot, webPort, chatModel, rerankHigh, rerankLow, metaFloor, identityFloor,
-  RECALL_RE, META_RE, IDENTITY_RE,
+  RECALL_RE, META_RE, IDENTITY_RE, embedCacheDir,
 } from "./config";
 
 const VAULT = vaultRoot();
@@ -40,7 +40,7 @@ const IDENTITY = IDENTITY_RE;
 
 // ---- models ----------------------------------------------------------------
 let _model: Promise<FlagEmbedding> | null = null;
-const getModel = () => (_model ??= FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 }));
+const getModel = () => (_model ??= FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() }));
 async function embedQuery(q: string): Promise<number[]> {
   const m = await getModel();
   for await (const batch of m.embed([`query: ${q.replace(/\s+/g, " ").trim()}`])) for (const v of batch) return Array.from(v as ArrayLike<number>);

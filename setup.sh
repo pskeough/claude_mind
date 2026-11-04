@@ -22,6 +22,10 @@ echo ""
 echo "[2/2] Installing dependencies (this compiles native modules; takes a few minutes)..."
 npm install
 
+echo ""
+echo "Fetching the embedding model if it is not already here..."
+node scripts/fetch-model.mjs || exit 1
+
 chmod +x scripts/lkhs-mcp-launch.sh launch.command 2>/dev/null || true
 
 echo ""

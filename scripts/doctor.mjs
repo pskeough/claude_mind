@@ -41,6 +41,12 @@ missing.length === 0
   ? add("PASS", "dependencies", "node_modules present (tsx + native deps)")
   : add("FAIL", "dependencies", `missing: ${missing.join(", ")}`, "npm install   (or: npm rebuild   if you upgraded Node)");
 
+// 2b. Embedding model. fastembed's own download bucket refuses requests, so without
+// this folder every embed fails with TAR_BAD_ARCHIVE.
+fs.existsSync(path.join(VAULT, "local_cache", "fast-bge-small-en-v1.5", "model_optimized.onnx"))
+  ? add("PASS", "embedding model", "local_cache/fast-bge-small-en-v1.5")
+  : add("FAIL", "embedding model", "local_cache/fast-bge-small-en-v1.5 missing", "node scripts/fetch-model.mjs");
+
 // 3. claude CLI
 has("claude")
   ? add("PASS", "claude CLI", sh("claude", ["--version"]).trim() || "found")

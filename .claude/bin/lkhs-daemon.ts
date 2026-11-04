@@ -38,8 +38,7 @@ import {
   sessionHalfLifeDays, dedupJaccard, enableNudge, nudgeFloor, enableGraphHop, etiquettePersonalProjects,
   enablePpr, pprAlpha, pprBeta, pprMaxFiles, pprMaxTerms, pprMaxCandidates, pprGraphBoost,
   resolveProfile, scopeRank, scopeProfiles,
-  TRIVIAL_RE, RECALL_RE, META_RE, IDENTITY_RE,
-} from "./config";
+  TRIVIAL_RE, RECALL_RE, META_RE, IDENTITY_RE,, embedCacheDir } from "./config";
 
 // Gate constants + intent regexes live in config.ts (single source of truth,
 // shared with lkhs-web.ts so the retrieval inspector reflects the real gate).
@@ -134,7 +133,7 @@ const SKILL_POOL = 8;                           // bi-encoder candidates to cons
 const SKILL_MAX = 2;                            // at most this many suggestions
 
 let _model: Promise<FlagEmbedding> | null = null;
-const getModel = () => (_model ??= FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 }));
+const getModel = () => (_model ??= FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() }));
 
 // Tiny prompt->vector memo. A single /gate call could embed the SAME prompt up to
 // three times (identity route, meta route, then the main pool, plus the graph-hop

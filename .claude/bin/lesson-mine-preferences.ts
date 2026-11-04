@@ -37,7 +37,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { memDir, clinicalLexicon } from "./config";
+import { memDir, clinicalLexicon, embedCacheDir } from "./config";
 import { llmMap, parseJson, LlmJob } from "./llm-pool";
 import { upsertLesson } from "./lessons";
 
@@ -187,7 +187,7 @@ async function main() {
   const PREF_SIM = 0.80;
   console.log(`  ${cands.length} candidates; grouping by meaning...`);
   const { FlagEmbedding, EmbeddingModel } = await import("fastembed");
-  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 });
+  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() });
   const vecs: number[][] = [];
   for await (const batch of model.embed(cands.map(c => `${c.statement} ${c.action}`)))
     for (const v of batch) vecs.push(Array.from(v as ArrayLike<number>));

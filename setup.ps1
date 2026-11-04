@@ -53,6 +53,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
+Write-Host "Fetching the embedding model if it is not already here..."
+node scripts/fetch-model.mjs
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
+Write-Host ""
 Write-Host "====================================================================" -ForegroundColor Green
 Write-Host " Bootstrap complete."
 Write-Host ""

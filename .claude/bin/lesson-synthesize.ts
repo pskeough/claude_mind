@@ -29,7 +29,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { memDir, summaryModel } from "./config";
+import { memDir, summaryModel, embedCacheDir } from "./config";
 import { vocabularyForPrompt } from "./task-types";
 import { llmMap, parseJson, LlmJob } from "./llm-pool";
 import { loadEpisodes, Episode } from "./lesson-mine-episodes";
@@ -53,7 +53,7 @@ const repr = (e: Episode) =>
 
 async function embedAll(texts: string[]): Promise<number[][]> {
   const { FlagEmbedding, EmbeddingModel } = await import("fastembed");
-  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 });
+  const model = await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: embedCacheDir() });
   const out: number[][] = [];
   for await (const batch of model.embed(texts)) for (const v of batch) out.push(Array.from(v as ArrayLike<number>));
   return out;

@@ -307,6 +307,7 @@ const run = (label, cmd, args) => {
 
 run("npm install", npm, ["install", "--no-audit", "--no-fund"]);
 if (nodeChanged) run("npm rebuild (native modules)", npm, ["rebuild"]);
+run("embedding model (fetched only if missing)", process.execPath, ["scripts/fetch-model.mjs"]);
 if (NO_WIRE) say("  hooks, MCP and background jobs skipped (--no-wire)");
 else {
   run("re-install global hooks", process.execPath, ["scripts/install-global-hooks.mjs", "--vault", VAULT]);
