@@ -1,0 +1,40 @@
+{
+  "slug": "my-study-2026-10",
+  "title": "My study: forge run",
+  "date": "2026-10-11",
+  "author": "the user",
+  "owner": "P1",
+  "projectDir": "C:\\path\\to\\my_project",
+  "outDir": "C:\\path\\to\\my_project\\paper_forge_2026-10-11",
+  "papers": [
+    {
+      "id": "main",
+      "working_title": "Working title of the paper",
+      "anchor_premise": "One or two sentences on what you currently think the paper shows. The run may change it."
+    }
+  ],
+  "collaborators": "none, or names and roles (co-author, mentor, data owner)",
+  "decisionFiles": [
+    "C:\\path\\to\\my_project\\DECISIONS.md",
+    "C:\\path\\to\\my_project\\notes\\corrections.md"
+  ],
+  "receiptHints": [
+    "results/final/*.csv are canonical; results/old/ is superseded",
+    "use scripts/analyse.py for the headline numbers"
+  ],
+  "hardLimits": [
+    "No causal claims: the design is observational",
+    "The pilot sample (n=20) is not reported as a result"
+  ],
+  "sensitivity": "Participant text is confidential: never paste it into a web search or a prompt that leaves the machine",
+  "venueHints": "Field: e.g. computational social science or psychological methods. Prefer journals with a no-fee route.",
+  "notes": "",
+  "boundariesFile": "",
+  "lessonsFile": "",
+  "priorPapers": [],
+  "mimesis": "auto",
+  "voice": "research",
+  "voiceFeedbackFile": "",
+  "runLogFile": "",
+  "bigModel": "sonnet"
+}
