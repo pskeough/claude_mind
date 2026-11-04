@@ -24,6 +24,8 @@ import urllib.request
 from difflib import SequenceMatcher
 from pathlib import Path
 
+ARXIV_ID = re.compile(r"^(\d{4}\.\d{4,5}|[a-z][a-z\-]*(\.[A-Z]{2})?/\d{7})(v\d+)?$")
+
 UA = "Mozilla/5.0 (research literature collection; arXiv ToS)"
 DELAY = 3.0
 
@@ -104,7 +106,14 @@ def main():
 
     results = []
     for n, (aid, expected, how) in enumerate(papers, 1):
-        pdf, txt = pdf_d / f"{aid}.pdf", txt_d / f"{aid}.txt"
+        # The id comes from a remote API response and becomes a filename, so it must
+        # look like an arXiv id. Old-style ids ("hep-th/9901001") keep their slash in
+        # the URL but not in the filename.
+        if not ARXIV_ID.match(aid):
+            print(f"[{n:>3}/{len(papers)}] skipped: not an arXiv id: {aid[:60]!r}")
+            continue
+        stem = aid.replace("/", "_")
+        pdf, txt = pdf_d / f"{stem}.pdf", txt_d / f"{stem}.txt"
         rec = {"arxiv_id": aid, "expected_title": expected, "resolved_by": how}
 
         if not pdf.exists() and not a.verify_only:

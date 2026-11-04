@@ -113,7 +113,7 @@ def from_plain(text: str) -> list[dict]:
 def arxiv_lookup(title: str) -> tuple[str | None, str | None]:
     """Title search against the arXiv API. Returns (id, returned_title)."""
     q = urllib.parse.quote(f'ti:"{title[:180]}"')
-    url = f"http://export.arxiv.org/api/query?search_query={q}&max_results=1"
+    url = f"https://export.arxiv.org/api/query?search_query={q}&max_results=1"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=45) as r:

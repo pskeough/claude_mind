@@ -56,12 +56,15 @@ function sameTree(a, b) {
 let installed = 0, current = 0, backedUp = 0;
 function place(src, dst, label, transform) {
   if (!fs.existsSync(src)) { console.error(`  ! missing in bundle: ${src}`); process.exitCode = 1; return; }
-  let staged = src;
+  let staged = src, stageDir = null;
   if (transform) {
-    staged = path.join(os.tmpdir(), `extras-${process.pid}-${path.basename(src)}`);
-    fs.writeFileSync(staged, transform(fs.readFileSync(src, "utf8")));
+    // A private directory, so another local user cannot pre-create or swap the file.
+    stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "extras-"));
+    staged = path.join(stageDir, path.basename(src));
+    fs.writeFileSync(staged, transform(fs.readFileSync(src, "utf8")), { flag: "wx" });
   }
-  if (sameTree(staged, dst)) { current++; console.log(`  = ${label}`); return; }
+  const cleanup = () => { if (stageDir) fs.rmSync(stageDir, { recursive: true, force: true }); };
+  if (sameTree(staged, dst)) { current++; console.log(`  = ${label}`); cleanup(); return; }
   const had = fs.existsSync(dst);
   console.log(`  ${had ? "~" : "+"} ${label}${had ? " (old copy backed up)" : ""}`);
   if (!DRY) {
@@ -75,7 +78,7 @@ function place(src, dst, label, transform) {
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.cpSync(staged, dst, { recursive: true });
   }
-  if (transform) fs.rmSync(staged, { force: true });
+  cleanup();
   installed++;
 }
 
