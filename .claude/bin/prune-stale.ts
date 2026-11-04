@@ -14,8 +14,8 @@
  *   npx tsx .claude/bin/prune-stale.ts --purge              print a DELETE plan (never executes)
  *
  * WHY NO BLANKET --apply: the 2026-07-23 census found 1,120 "missing" files and
- * they are mostly NOT junk — moved project roots (a book repo and its
- * chapters) and a legacy corpus namespace, i.e. content whose only
+ * they are mostly NOT junk — moved project roots (a book project repo incl. a novel
+ * chapters) and the legacy `writing/` corpus namespace, i.e. content whose only
  * local embedding may be the store itself. Disk-existence is not a staleness
  * signal in a memory system; removal is a per-file human decision, so the tool
  * only reports, and tombstones exactly what it is told to.

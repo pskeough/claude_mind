@@ -31,7 +31,7 @@
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { vaultRoot, memDir, summaryModel, claudeBin } from "./config";
+import { vaultRoot, memDir, summaryModel, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { loadFactsFile, writeFactsFile, factKey, Fact } from "./persona-facts";
 import { toAscii } from "./capture-session";
 
@@ -196,7 +196,7 @@ function judgeBatch(entries: JournalEntry[], facts: Fact[]): Op[] {
     "Rules: SUPERSEDE only when the entry clearly establishes a listed fact is outdated and you can state the replacement. CONTRADICT when the entry conflicts with a listed fact but you cannot tell which is right. NEW_FACT only for durable, non-trivial facts about the user or their work worth remembering for months (decisions, milestones, changed plans); never session minutiae, never emotional states, never secrets. If nothing qualifies for an entry, emit one NOOP for it. Confidence reflects how unambiguous the evidence quote is. Output the JSON array ONLY."
   ].join("\n");
 
-  const res = spawnSync(`"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("sleep-reconcile", `"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" },
     maxBuffer: 10 * 1024 * 1024, timeout: 240_000

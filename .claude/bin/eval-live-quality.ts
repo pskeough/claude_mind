@@ -28,7 +28,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { spawn, spawnSync } from "child_process";
-import { vaultRoot, memDir, daemonPort, summaryModel } from "./config";
+import { vaultRoot, memDir, daemonPort, summaryModel, headlessFlags, llmSpawnSync } from "./config";
 
 const VAULT = vaultRoot();
 const EVAL_DIR = path.join(memDir(), "eval");
@@ -113,7 +113,7 @@ function judge(results: Result[]): boolean {
     `Output JSON: {"<prompt id>": [rating for item 0, rating for item 1, ...], ...} covering every prompt id above.`,
   ].join("\n");
   console.error(`judging ${injecting.reduce((n, r) => n + r.hits.length, 0)} injected items across ${injecting.length} prompts via claude -p (${summaryModel()})...`);
-  const res = spawnSync("claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("eval-live-quality", "claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" }, maxBuffer: 10 * 1024 * 1024, timeout: 300_000,
   });

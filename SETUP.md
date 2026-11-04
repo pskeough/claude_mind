@@ -62,7 +62,7 @@ they didn't give):
   "domains": [],
   "ingestRoots": ["/Users/<them>/Documents", "/Users/<them>/Projects"],
   "exclude": [],
-  "summaryModel": "claude-sonnet-4-6"
+  "summaryModel": "sonnet"
 }
 ```
 

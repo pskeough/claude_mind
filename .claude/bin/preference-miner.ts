@@ -32,7 +32,7 @@ import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
 import { spawnSync } from "child_process";
-import { memDir, summaryModel, claudeBin, mimesisProfilesRoot, vaultRoot } from "./config";
+import { memDir, summaryModel, claudeBin, mimesisProfilesRoot, vaultRoot, headlessFlags, llmSpawnSync } from "./config";
 
 const argv = process.argv.slice(2);
 const APPLY = argv.includes("--apply");
@@ -141,7 +141,7 @@ function judgeChain(c: Chain): Mined | null {
     "",
     'Output exactly: {"accepted": true|false, "final_text": "..."|null, "pairs": [...]}',
   ].join("\n");
-  const res = spawnSync(claudeBin(), ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("preference-miner", claudeBin(), ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: vaultRoot(), input: stdin, shell: true, env: { ...process.env, LKHS_CAPTURE: "1" }, maxBuffer: 10 * 1024 * 1024, timeout: 300_000,
   });
   const raw = (res.stdout ? Buffer.from(res.stdout).toString("utf8") : "").trim();

@@ -23,7 +23,7 @@
  * sends each injected item's TEXT to a `claude -p` judge (summaryModel, per the
  * model policy) asking whether the text itself reveals a category the profile
  * ceiling excludes — a semantic leak, independent of labels. Found this way on
- * 2026-07-23: wiki/Biography, cards/Letters, personal-correspondence material (then fixed via
+ * 2026-07-23: wiki/Biography, cards/Letters, a third party material (then fixed via
  * chunkScopes.prefixes). Semantic-leak verdicts are reported separately and do
  * not fail the run by themselves; they are review queue, not oracle.
  */
@@ -31,7 +31,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import { spawnSync } from "child_process";
-import { vaultRoot, daemonPort, scopeRank, scopeOfChunk, scopeProfiles, summaryModel, claudeBin } from "./config";
+import { vaultRoot, daemonPort, scopeRank, scopeOfChunk, scopeProfiles, summaryModel, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { getDb } from "./store";
 
 const VAULT = vaultRoot();
@@ -77,7 +77,7 @@ function contentAudit(entries: Array<{ probeId: string; profile: string; ceiling
       "",
       'Output a JSON array, one entry per item: [{"id": "<probeId:idx>", "leak": true|false, "category": "<excluded category or empty>"}]',
     ].join("\n");
-    const res = spawnSync(claudeBin(), ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+    const res = llmSpawnSync("eval-scope-leak", claudeBin(), ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
       cwd: VAULT, input: stdin, shell: true, env: { ...process.env, LKHS_CAPTURE: "1" }, maxBuffer: 10 * 1024 * 1024, timeout: 300_000,
     });
     const raw = (res.stdout ? Buffer.from(res.stdout).toString("utf8") : "").trim();

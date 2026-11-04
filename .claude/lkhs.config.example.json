@@ -8,8 +8,8 @@
   "personaHub": { "id": "me", "label": "Your Name", "type": "person" },
 
   "_comment_models": "summaryModel: model for all background summaries/cards/themes (env LKHS_SUMMARY_MODEL). chatModel: model for the web-console memory chat (env LKHS_CHAT_MODEL); falls back to summaryModel.",
-  "summaryModel": "claude-sonnet-4-6",
-  "chatModel": "claude-sonnet-4-6",
+  "summaryModel": "sonnet",
+  "chatModel": "sonnet",
 
   "_comment_ports": "daemonPort: warm retrieval daemon (env LKHS_DAEMON_PORT). webPort: local console (env LKHS_WEB_PORT).",
   "daemonPort": 7077,

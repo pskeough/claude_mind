@@ -54,64 +54,86 @@ moves, and the script prints that path when it finishes.
 
 ---
 
-## What it does, in order
+## Installs that are not a plain clone
 
-1. **Preconditions** — confirms this is a Claude Mind vault and a git clone.
-2. **Remote** — reports `origin` and checks it is reachable.
-3. **Backup** — copies the three mutable files plus your config.
-4. **Clean tree** — resets only those three. Any *other* local edit to a
-   tracked file stops the run rather than being silently discarded.
-5. **Pull** — fast-forward only.
-6. **Restore** — puts your `MEMORY.md` and `VAULT-INDEX.md` back.
-7. **Dependencies and rewiring** — `npm install`, plus `npm rebuild` if your
-   Node major version changed since the last run (the native modules
-   `better-sqlite3` and `onnxruntime` are compiled per machine and per Node
-   ABI). Then re-installs the global hooks, re-registers the MCP server, and on
-   macOS rewrites the launchd jobs, whose plists embed an absolute path to
-   `node` and so must be regenerated whenever Node moves.
-8. **Verify** — runs `npm run doctor` and reports.
+The script handles all three states an install can be in, with no flags:
+
+| State | How it got there | What the upgrade does |
+|---|---|---|
+| clone | `git clone` of this repo | fast-forward |
+| diverged | a private copy of the engine, or `origin` pointed at your own repo | adopts this repo |
+| unpacked | copied out of a zip, no `.git` folder | `git init`, then adopts this repo |
+
+**Adopting** backs up every local file that differs from this repo into
+`.claude/backups/upgrade-<timestamp>/engine/`, points the folder at
+`origin/main`, and checks out the current engine. Git never touches untracked
+files, and all your data is untracked, so it stays exactly where it is. If
+`origin` pointed somewhere else, that URL is kept as the `previous-origin`
+remote rather than discarded. From then on the install is a normal clone and
+later upgrades are fast-forwards.
+
+Git has to be installed for this (https://git-scm.com). To upgrade from a
+different repo: `npm run upgrade -- --remote <url>`.
 
 ---
 
-## If `origin` is missing, dead, or points somewhere old
+## Plan budget (Pro vs Max)
 
-Early installs were delivered before the public repo existed, so an old vault
-may have no `origin`, or one pointing at a repo that no longer resolves. The
-script will not guess: if `origin` is unreachable it stops and tells you to
-re-run with the current repo.
+Background work (session capture, the nightly refresh, ingest, wiki compiles)
+calls `claude -p` on your subscription. On a Pro plan that needs a cap:
 
 ```bash
-npm run upgrade -- --remote https://github.com/pskeough/claude_mind.git
+npm run upgrade -- --plan pro    # 30 background calls a day, 12 kept for capture, 2 workers
+npm run upgrade -- --plan max    # no cap
 ```
 
-That repoints `origin` and continues. Your data is untracked, so changing the
-remote does not put any of it at risk.
+This writes `llmBudget` into `.claude/lkhs.config.json`. An install whose old
+engine capped by default keeps its cap automatically. `npm run budget` shows
+today's usage.
 
-If the vault turns out not to be a git clone at all, the upgrade cannot run.
-Clone the repo fresh into a new folder and copy your untracked data across
-(`.claude/memory/`, `journal/`, `library/`, `cards/`, `themes/`, `graph/`,
-`persona/`, `wiki/`, `raw/`, `answers.json`), then run
-`node scripts/finalize-setup.mjs --answers answers.json` in the new folder.
+---
+
+## What it does, in order
+
+1. **Preconditions**: confirms this is a Claude Mind vault and that git exists.
+2. **Remote**: points `origin` at this repo (keeping any other URL as
+   `previous-origin`), checks it is reachable, fetches.
+3. **Plan**: fast-forward if the local history is contained in upstream,
+   otherwise adopt.
+4. **Backup**: the three mutable files, your config and profile, and in adopt
+   mode every engine file that differs from upstream.
+5. **Update**: fast-forward, or reset to upstream and check out its files. In
+   fast-forward mode a local edit to a tracked file stops the run instead of
+   being discarded.
+6. **Restore**: puts your `MEMORY.md` and `VAULT-INDEX.md` back.
+7. **Config**: rewrites dated model ids (`claude-sonnet-4-6`) to aliases
+   (`sonnet`) so they track the newest model, and applies `--plan`.
+8. **Dependencies and rewiring**: `npm install`, plus `npm rebuild` if your
+   Node major version changed (the native modules are compiled per Node ABI).
+   Then re-installs the global hooks, re-registers the MCP server, and
+   re-registers the background jobs (launchd on macOS, Task Scheduler on
+   Windows), whose entries embed absolute paths.
+9. **Verify**: runs `npm run doctor` and reports.
 
 ---
 
 ## After the upgrade
 
-`npm run doctor` runs automatically at the end. If it is green, you are done.
-
-Two things worth doing when the upgrade spans a lot of versions:
+Bring the data up to the new engine. This is resumable and prints its plan
+before doing anything:
 
 ```bash
-npm run reindex     # re-embed everything (needed if the chunker changed)
-npm run dream       # rebuild cards, themes, graph and the map of content
+node scripts/migrate-vault.mjs           # show the plan
+node scripts/migrate-vault.mjs --apply   # run it
 ```
 
-Neither is destructive; both are rebuilds from data you already have. `reindex`
-on a large vault takes a while and is CPU-bound, so run it when you do not need
-the machine.
+Do **not** run `npm run reindex` as part of an upgrade. The embedding model,
+dimension and contextual prefix have not changed, so every stored vector is
+still valid; reindexing a large vault is hours of compute for nothing.
+`UPGRADING-AN-EXISTING-VAULT.md` has the reasoning.
 
 If a new module appeared that you want on (the voice loop, weekly reports,
-evals), see the module section of `SETUP.md` — the config keys are additive and
+evals), see the module section of `SETUP.md`. The config keys are additive and
 anything unconfigured stays dormant.
 
 ---

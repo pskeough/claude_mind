@@ -23,7 +23,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import { processFileEmbeddings } from "./vector-engine";
-import { vaultRoot, summaryModel } from "./config";
+import { vaultRoot, summaryModel, headlessFlags, llmSpawnSync } from "./config";
 
 const VAULT = vaultRoot();
 const JOURNAL_DIR = path.join(VAULT, "journal");
@@ -98,7 +98,7 @@ function synthesize(project: string, src: string, lastActive: string): string {
     spec,
   ].join("\n");
 
-  const res = spawnSync("claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("build-cards", "claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdin, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" }, // never capture our own gen sessions
     maxBuffer: 10 * 1024 * 1024, timeout: 180_000,

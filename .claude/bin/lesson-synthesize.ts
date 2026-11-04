@@ -29,7 +29,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { memDir } from "./config";
+import { memDir, summaryModel } from "./config";
 import { vocabularyForPrompt } from "./task-types";
 import { llmMap, parseJson, LlmJob } from "./llm-pool";
 import { loadEpisodes, Episode } from "./lesson-mine-episodes";
@@ -162,7 +162,7 @@ async function main() {
   // genuinely hard judgement in this pipeline - it is where a weaker model produces
   // confident fortune cookies - while episode extraction is per-session summarization
   // and stays on the cheap model.
-  const replies = await llmMap(jobs, { label: "synthesize", model: "claude-opus-4-6" });
+  const replies = await llmMap(jobs, { label: "synthesize", model: summaryModel() });
   let written = 0, rejectedNoPrinciple = 0, rejectedGate = 0;
   const proposals: any[] = [];
 

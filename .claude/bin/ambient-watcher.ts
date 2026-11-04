@@ -25,7 +25,7 @@ import { promises as fs } from "fs";
 import * as fsSync from "fs";
 import * as path from "path";
 import { processFileEmbeddings } from "./vector-engine";
-import { vaultRoot } from "./config";
+import { vaultRoot, headlessFlags, llmAllow } from "./config";
 
 const VAULT_ROOT = vaultRoot();
 const WATCHER_LOCK = path.join(VAULT_ROOT, ".claude", "watcher.lock");
@@ -155,10 +155,12 @@ function runCompile(files: string[]): void {
   const args = [
     "-p",
     "--allowedTools", `"${COMPILE_ALLOWED_TOOLS}"`,
-    "--output-format", "text"
+    "--output-format", "text",
+    ...headlessFlags()
   ];
   if (MAX_BUDGET_USD.toLowerCase() !== "off") args.push("--max-budget-usd", MAX_BUDGET_USD);
 
+  if (!llmAllow("compile")) { writeLog(`compile:skipped ${files.length} file(s) (daily model-call budget reached)`); return; }
   writeLog(`compile:start #${compileCount} ${files.length} file(s)`);
   const child = spawn("claude", args, { cwd: VAULT_ROOT, shell: true, stdio: ["pipe", "pipe", "pipe"] });
   // Rules + task both ride the stdin prompt (they used to be --append-system-prompt,

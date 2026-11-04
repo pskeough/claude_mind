@@ -18,7 +18,7 @@
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { vaultRoot, memDir, summaryModel, claudeBin } from "./config";
+import { vaultRoot, memDir, summaryModel, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { loadFactsFile, Fact } from "./persona-facts";
 import { toAscii } from "./capture-session";
 
@@ -89,7 +89,7 @@ async function main() {
     "Hard rules: every assertion must trace to a listed fact and carry its date; no invented causes or interpretations beyond what facts state; no praise, no motivational language, no em dashes, plain ASCII; write in second person ('you moved from X to Y')."
   ].join("\n");
 
-  const res = spawnSync(`"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("drift", `"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" },
     maxBuffer: 10 * 1024 * 1024, timeout: 240_000

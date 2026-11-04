@@ -15,7 +15,7 @@ import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { processFileEmbeddings } from "./vector-engine";
-import { vaultRoot, summaryModel, claudeBin } from "./config";
+import { vaultRoot, summaryModel, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { harvestFromSummary } from "./prospective";
 
 const VAULT_ROOT = vaultRoot(); // resolved via env > config.centralVault > derived
@@ -28,7 +28,10 @@ const MAX_INPUT_CHARS = 50_000;
 const AUTOMATION_SIGNATURES = [
   "archivist instructions", "BEGIN_SESSION_LOG", "BEGIN_PROJECT_DIGEST",
   "BEGIN_CLUSTER_SOURCE", "BEGIN_PROJECT_CARD_SOURCE",
-  "LKHS ambient compile pass", "LKHS pipeline:"
+  "LKHS ambient compile pass", "LKHS pipeline:",
+  // Not ours but just as mechanical (2026-10-30): the calendar cache task fires
+  // several times a day, and the security-guidance plugin opens a review session per edit.
+  '<scheduled-task name="hearth-calendar-cache"', "Review this change for security vulnerabilities."
 ];
 // Model for summaries resolves via config.summaryModel() (env > config > default),
 // read at call time so the sweep can override it dynamically.
@@ -189,10 +192,10 @@ function summarize(ex: Extracted, project: string, dateStr: string): string {
   ].join("\n");
 
   const model = summaryModel();
-  const res = spawnSync(`"${claudeBin()}"`, [
+  const res = llmSpawnSync("capture", `"${claudeBin()}"`, [
     "-p", instruction,
     "--model", model,
-    "--output-format", "text"
+    "--output-format", "text", ...headlessFlags()
   ], {
     cwd: VAULT_ROOT,
     input: stdinContent,
@@ -206,8 +209,11 @@ function summarize(ex: Extracted, project: string, dateStr: string): string {
   const out = toAscii(raw).trim();
   if (res.status === 0 && out.length > 40) return out;
 
-  // Extractive fallback so a memory is recorded regardless.
-  log(`capture:summary-fallback status=${res.status} ${(res.stderr || "").slice(0, 200).replace(/\n/g, " ")}`);
+  // Extractive fallback so a memory is recorded regardless. spawnSync hands back
+  // Buffers, not strings, unless an encoding was set, so the diagnostic is decoded
+  // before it is sliced: this line runs only on the failure path, where a throw would
+  // take the whole capture down with it.
+  log(`capture:summary-fallback status=${res.status} ${String(res.stderr || "").slice(0, 200).replace(/\n/g, " ")}`);
   const fileTools = ex.tools.filter(t => /\.(md|ts|js|json|py|txt)/.test(t)).slice(0, 10);
   return [
     `Session in ${project} (auto-captured, model summary unavailable)`,
@@ -321,8 +327,12 @@ export async function captureSession(opts: CaptureOpts): Promise<CaptureResult> 
     fs.appendFileSync(journalFile, entry, "utf-8");
 
     const key = path.relative(VAULT_ROOT, journalFile).split(path.sep).join("/");
+    // Not forced: the chunk-hash skip embeds only the new entry. Forcing re-embedded every
+    // chunk of the journal and upsertFile then discarded all but the new vectors; for
+    // Claude_Personal_Conv.md (6,267 chunks) that was ~20 min at 400% CPU per capture,
+    // which is why sweeps ran into their time limit (2026-10-30).
     try {
-      await processFileEmbeddings(key, fs.readFileSync(journalFile, "utf-8"), true);
+      await processFileEmbeddings(key, fs.readFileSync(journalFile, "utf-8"));
     } catch (e: any) { log(`capture:embed-fail ${e.message}`); }
 
     fs.appendFileSync(LEDGER, JSON.stringify({
@@ -352,5 +362,9 @@ if (require.main === module) {
     cwd: process.env.LKHS_CWD || arg("cwd") || "unknown",
     sessionId: process.env.LKHS_SESSION || arg("session") || "unknown",
     event: process.env.LKHS_EVENT || arg("event") || "SessionEnd"
-  }).catch((e: any) => log(`capture:fatal ${e.message}`));
+  }).then(
+    // Exit explicitly: the loaded embedder can hold the loop open, and this runs
+    // detached from a SessionEnd hook with no time limit (same bug as capture-sweep).
+    () => process.exit(0),
+    (e: any) => { log(`capture:fatal ${e.message}`); process.exit(1); });
 }

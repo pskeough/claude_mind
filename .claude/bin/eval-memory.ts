@@ -29,7 +29,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { vaultRoot, memDir, daemonPort, summaryModel, clinicalLexicon } from "./config";
+import { vaultRoot, memDir, daemonPort, summaryModel, clinicalLexicon, headlessFlags, llmSpawnSync } from "./config";
 import { queryVectorStore } from "./vector-query";
 import { recallPersonaFacts, PersonaFact } from "./lkhs-mcp";
 
@@ -283,7 +283,7 @@ function generate() {
   ].join("\n");
 
   console.error(`sending ${cand.length} candidate facts to claude -p (${summaryModel()})...`);
-  const res = spawnSync("claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("eval-memory", "claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" }, maxBuffer: 10 * 1024 * 1024, timeout: 300_000,
   });

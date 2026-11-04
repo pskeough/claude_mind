@@ -69,3 +69,19 @@ Thumbs.db
 .claude/memory/preference_mined.json
 .claude/memory/cache/llm/
 graph/ppr-index.json
+
+# Everything else the engine writes under .claude/memory is per-install runtime state
+# (TODAY.md, state.json, prospective/reconcile/claims ledgers, lesson triggers and fires,
+# budget and install stamps). Only the routing index and the profile template ship.
+# An allowlist, because each new engine feature adds a file here and a denylist that
+# lags one release is how a pull ends up colliding with a live vault.
+.claude/memory/*
+!.claude/memory/MEMORY.md
+!.claude/memory/core_profile.example.json
+.claude/backups/
+.claude/home/
+.claude/skills/
+.claude/settings.local.json
+lessons/
+# A voice corpus some installs keep inside the vault for the Mimesis engine.
+/mimesis/

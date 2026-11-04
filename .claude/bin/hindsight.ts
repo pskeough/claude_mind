@@ -28,7 +28,7 @@ import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { vaultRoot, memDir, summaryModel, claudeBin } from "./config";
+import { vaultRoot, memDir, summaryModel, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { toAscii } from "./capture-session";
 import { layerStats, getDb } from "./store";
 
@@ -145,7 +145,7 @@ function judgeBatch(items: GradeItem[]): Grade[] {
     `Output a JSON array only: [{"id": "<case id>", "grade": "USED|IGNORED|HARMFUL", "reason": "<one short sentence>"}]. When uncertain between USED and IGNORED, choose IGNORED.`
   ].join("\n");
 
-  const res = spawnSync(`"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("hindsight", `"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" },
     maxBuffer: 10 * 1024 * 1024, timeout: 240_000

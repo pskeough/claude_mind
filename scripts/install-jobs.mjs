@@ -57,10 +57,15 @@ function windows() {
 
   let ok = 0;
   for (const j of JOBS) {
-    const target = path.join(VAULT, j.script.replace(/\//g, path.sep));
+    // Through scripts\run-job.cmd, which cd's into the vault first. Task Scheduler starts
+    // jobs in C:\Windows\System32, and `--import tsx` resolves from the working directory,
+    // so a bare `node --import tsx <abs path>` task fails with ERR_MODULE_NOT_FOUND.
+    const launcher = path.join(VAULT, "scripts", "run-job.cmd");
+    const rel = j.script.replace(/\//g, path.sep);
     const cmd = j.tsx
-      ? `"${nodeBin}" --import tsx "${target}"`
-      : `"${nodeBin}" "${target}"`;
+      ? `"${launcher}" "${nodeBin}" --import tsx "${rel}"`
+      : `"${launcher}" "${nodeBin}" "${rel}"`;
+    if (cmd.length > 261) console.error(`  ! ${j.name}: task command is ${cmd.length} chars; schtasks allows 261. Move the vault to a shorter path such as C:\\Claude.`);
     const args = ["/Create", "/TN", j.name, "/TR", cmd, "/F"];
     if (j.kind === "keepalive") args.push("/SC", "ONLOGON");
     else if (j.kind === "hourly") args.push("/SC", "HOURLY");

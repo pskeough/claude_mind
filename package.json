@@ -1,11 +1,12 @@
 {
   "name": "claudemind",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Claude Mind — a local, always-on memory brain for Claude Code (portable build).",
   "main": "index.js",
   "scripts": {
     "preflight": "node scripts/preflight.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "budget": "tsx .claude/bin/budget.ts",
     "upgrade": "node scripts/upgrade.mjs",
     "setup:wiring": "node scripts/finalize-setup.mjs",
     "install:hooks": "node scripts/install-global-hooks.mjs",

@@ -77,6 +77,11 @@ const SCRUB = [
   [/\bBasilisk\b/gi, "a novel"],
   [/\bAI_Book_Editor\b/g, "a book project repo"],
   [/\bEpithelium\b/g, "a corpus graph"],
+  // Dev-machine paths in comments and usage examples, either slash direction.
+  [/C:[\\/]AI Coding Projects[\\/]Online_AI[\\/]ClaudeMind/gi, "<vault>"],
+  [/C:[\\/]AI Coding Projects[\\/]Online_AI/gi, "C:\\Projects"],
+  [/C:[\\/]AI Coding Projects/gi, "C:\\Projects"],
+  [/\bPsych_App's check-in log\b/gi, "a private tracker log"],
 ];
 
 /** Markers that must not survive the scrub. Checked AFTER writing, not assumed. */
@@ -91,7 +96,9 @@ const FORBIDDEN = /\b(patrick|pskeough|psychbench|granularity gap|second tree|ab
  * second user's vault about papers it has never seen — a leak AND a broken eval. Some
  * things are not de-personalizable, only omittable.
  */
-const NEVER_SHIP = new Set(["eval-multihop.ts", "eval-probes.ts"]);
+// The dev console's Home page and its daily check-in nudge read the developer's own
+// tracker, feeds and deadlines; on any other machine they are dead paths.
+const NEVER_SHIP = new Set(["eval-multihop.ts", "eval-probes.ts", "home-data.ts", "checkin.ts", "checkin-nudge.mjs"]);
 
 /**
  * Files whose portable version is deliberately different and must NOT be overwritten.
@@ -110,6 +117,7 @@ const NEVER_COPY = new Set([
   "calibrate-rerank.ts",
   "config.ts",        // fork's own vault resolution + de-personalized IDENTITY_RE
   "health-check.ts",  // asserts WHICH install it runs in; the dev copy asserts the opposite
+  "lkhs-web.ts",      // the dev console imports the personal Home page (NEVER_SHIP above)
   // The fork's session-start and capture hooks are .mjs rewrites of the dev vault's
   // PowerShell ones, so they are separate implementations rather than stale copies.
   "lkhs-session-start.ps1", "lkhs-capture.ps1", "lkhs-project-card.ps1", "lkhs-refresh.ps1",
@@ -120,6 +128,70 @@ const NEVER_COPY = new Set([
 ]);
 
 const scrub = (s) => SCRUB.reduce((acc, [rx, to]) => acc.replace(rx, to), s);
+
+/**
+ * Fork-only code changes, applied after the scrub on every sync. Each one names an
+ * anchor that must exist; a missing anchor fails the run, because a patch that
+ * silently stops applying is exactly how a Pro-plan install would lose its cap.
+ *
+ * The budget gate: every background `claude -p` goes through config.ts llmSpawnSync /
+ * llmAllow, so a Pro-plan install cannot drain its plan overnight. Synchronous call
+ * sites are rewritten mechanically; the three async ones get a guard at entry.
+ */
+const SYNC_CLAUDE = /\bspawnSync\((\s*(?:"claude"|claudeBin\(\)|`"\$\{claudeBin\(\)\}"`))/g;
+const PATCHES = {
+  "llm-pool.ts": [[
+    "  const model = opts.model || summaryModel();\n  return new Promise(",
+    "  const model = opts.model || summaryModel();\n  // Daily budget gate (config.ts llmBudget). Refused reads as a failed call: \"\".\n  if (!llmAllow(opts.label || \"pool\")) return Promise.resolve(\"\");\n  return new Promise(",
+  ]],
+  "ambient-watcher.ts": [[
+    "  writeLog(`compile:start #${compileCount}",
+    "  if (!llmAllow(\"compile\")) { writeLog(`compile:skipped ${files.length} file(s) (daily model-call budget reached)`); return; }\n  writeLog(`compile:start #${compileCount}",
+  ]],
+  "pipelines.ts": [[
+    "  const child = spawn(\"claude\", [",
+    "  if (!llmAllow(\"pipeline\")) {\n    await log(`pipeline:skipped ${pipeline} (daily model-call budget reached)`);\n    process.exit(0);\n  }\n  const child = spawn(\"claude\", [",
+  ]],
+  // Read the trigger index only from the vault this hook lives in. The dev copy falls
+  // back to the active project's .claude/memory, which lets any opened repo inject
+  // "lessons" into every tool call.
+  "lkhs-pretool-lesson.mjs": [[
+    "  if (!existsSync(index)) {\n    if (!process.env.CLAUDE_PROJECT_DIR) return;\n    index = join(process.env.CLAUDE_PROJECT_DIR, \".claude\", \"memory\", \"lesson-triggers.json\");\n    if (!existsSync(index)) return;\n  }",
+    "  if (!existsSync(index)) return;",
+  ]],
+};
+const GATED = new Set(["llm-pool.ts", "ambient-watcher.ts", "pipelines.ts"]);
+
+function addConfigImport(src, name, f) {
+  const rx = /import \{([^}]*)\} from "\.\/config";/;
+  const m = src.match(rx);
+  if (!m) throw new Error(`${f}: needs ${name} but has no ./config import to extend`);
+  if (new RegExp(`\\b${name}\\b`).test(m[1])) return src;
+  return src.replace(rx, `import {${m[1].replace(/\s*$/, "")}, ${name} } from "./config";`);
+}
+
+function forkPatch(f, s) {
+  s = s.replace(/\r\n/g, "\n"); // some dev files are CRLF; anchors and .gitattributes are LF
+  for (const [anchor, repl] of PATCHES[f] || []) {
+    if (!s.includes(anchor)) throw new Error(`${f}: patch anchor not found, update PATCHES in backport.mjs:\n${anchor}`);
+    s = s.replace(anchor, repl);
+  }
+  if (GATED.has(f)) s = addConfigImport(s, "llmAllow", f);
+  // Weekly principle synthesis runs on the install's summary model, not a pinned Opus:
+  // on a Pro plan one Opus batch can cost a day of the cap.
+  if (f === "lesson-synthesize.ts") {
+    const rx = /model: "(?:claude-opus-[\w-]+|opus)"/;
+    if (!rx.test(s)) throw new Error(`${f}: synthesis model anchor not found, update forkPatch in backport.mjs`);
+    s = addConfigImport(s.replace(rx, "model: summaryModel()"), "summaryModel", f);
+  }
+  if (f.endsWith(".ts") && f !== "config.ts" && SYNC_CLAUDE.test(s)) {
+    const label = f === "capture-session.ts" ? "capture" : f.replace(/\.ts$/, "");
+    s = s.replace(SYNC_CLAUDE, `llmSpawnSync("${label}", $1`);
+    s = addConfigImport(s, "llmSpawnSync", f);
+  }
+  SYNC_CLAUDE.lastIndex = 0;
+  return s;
+}
 
 let copied = 0, unchanged = 0;
 const written = [];
@@ -132,7 +204,7 @@ for (const { sub, exts } of DIRS) {
     .filter(f => !NEVER_COPY.has(f) && !NEVER_SHIP.has(f));
   for (const f of targets) {
     const raw = fs.readFileSync(path.join(src, f), "utf8");
-    const out = scrub(raw);
+    const out = forkPatch(f, scrub(raw));
     const dstFile = path.join(dst, f);
     const prev = fs.existsSync(dstFile) ? fs.readFileSync(dstFile, "utf8") : null;
     if (prev === out) { unchanged++; continue; }

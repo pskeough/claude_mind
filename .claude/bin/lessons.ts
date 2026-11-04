@@ -350,26 +350,32 @@ export function renderPlaybook(opts: { domains?: string[]; max?: number; verbose
     const want = new Set(opts.domains.map(d => d.toLowerCase()));
     ls = ls.filter(l => want.has(l.domain.toLowerCase()));
   }
-  // RESERVED SLOTS, not a single ranking. Ranking purely by recurrence looked
-  // principled and was wrong: tool-hygiene lessons recur far more often than
-  // preferences or method principles (44 sessions vs 2), so a pure sort buried every
-  // high-value entry under the long tail of bash trivia. Measured: with max=22 and
-  // recurrence ranking, all 4 active preferences were crowded out entirely.
+  // RESERVED SLOTS for method, and none for preferences.
   //
-  // Each class competes only against its own kind, and the classes are ordered by how
-  // much a single entry changes behaviour: how the user wants work done > method >
-  // which flag to pass.
+  // Ranking purely by recurrence looked principled and was wrong: tool-hygiene lessons
+  // recur far more often than method principles (44 sessions vs 2), so a pure sort
+  // buried every high-value entry under the long tail of bash trivia. Each remaining
+  // class competes only against its own kind.
+  //
+  // The preference reservation is gone rather than fixed. It was ~30% of the slots and
+  // it could never bind: every preference is personal scope by definition (they are
+  // facts about him, not about the world) and the only caller that writes this view to
+  // disk applies the professional ceiling FIRST, so the class it reserved for was empty
+  // before the arithmetic ran. Reordering the two would restore the slots by removing
+  // the ceiling, which is the one thing that cannot happen here - PLAYBOOK.md is read by
+  // a hook with no profile awareness, so a personal line rendered into it is a leak in
+  // any session that later reads the file under a stricter profile. Preferences travel
+  // the store route (lesson-embed.ts, path b), which is profile-aware at the retrieval
+  // source. Reserving space for them in a view they cannot enter only made the crowding
+  // fix look like it was working.
   const max = opts.max ?? 20;
   const byRecurrence = (a: Lesson, b: Lesson) => b.sessions.length - a.sessions.length || b.observations - a.observations;
-  const prefs = ls.filter(l => l.kind === "preference").sort(byRecurrence);
-  const method = ls.filter(l => l.kind !== "preference" && (l.tier ?? 1) >= 2).sort(byRecurrence);
-  const hygiene = ls.filter(l => l.kind !== "preference" && (l.tier ?? 1) < 2).sort(byRecurrence);
-  const prefSlots = Math.min(prefs.length, Math.max(4, Math.round(max * 0.3)));
+  const method = ls.filter(l => (l.tier ?? 1) >= 2).sort(byRecurrence);
+  const rest = ls.filter(l => (l.tier ?? 1) < 2).sort(byRecurrence);
   const methodSlots = Math.min(method.length, Math.max(3, Math.round(max * 0.2)));
   ls = [
-    ...prefs.slice(0, prefSlots),
     ...method.slice(0, methodSlots),
-    ...hygiene.slice(0, Math.max(0, max - prefSlots - methodSlots)),
+    ...rest.slice(0, Math.max(0, max - methodSlots)),
   ];
   if (!ls.length) return "";
   const byDomain = new Map<string, Lesson[]>();
@@ -461,15 +467,44 @@ const EXEC_FIELDS = ["command", "file_path", "url", "pattern", "notebook_path", 
 /** One historical call: its executable text, and whether the result came back an error. */
 interface CorpusCall { text: string; err: boolean }
 
-function corpusByTool(): Map<string, CorpusCall[]> {
+/** How recent a transcript has to be for the tools it names to count as still connected. */
+const SURFACE_DAYS = 45;
+
+interface Corpus {
+  byTool: Map<string, CorpusCall[]>;
+  /** Every tool NAME seen in a transcript touched within SURFACE_DAYS, whether or not the
+   *  call carried an executable field. This is the closest thing to a live tool surface
+   *  that is observable from disk: a server that has been disconnected stops appearing,
+   *  while a tool whose inputs are all non-executable (the browser `computer` call, whose
+   *  arguments are coordinates) still does. Kept separate from `byTool` for exactly that
+   *  reason - `byTool` is about matchable TEXT, this is about existence. */
+  recentTools: Set<string>;
+}
+
+// One walk per process. `--render` writes the trigger index and then checks the tool
+// surface, and each of those needs the corpus; walking every transcript twice doubled the
+// nightly cost of a pass whose whole point is to be cheap enough to run every night.
+let _corpus: Corpus | null = null;
+
+function corpusByTool(): Corpus {
+  if (_corpus) return _corpus;
   const root = path.join(process.env.HOME || process.env.USERPROFILE || "", ".claude", "projects");
   const byTool = new Map<string, CorpusCall[]>();
+  const recentTools = new Set<string>();
   const files: string[] = [];
+  const fresh = new Set<string>();
+  const cutoff = Date.now() - SURFACE_DAYS * 86400_000;
   try {
     (function walk(d: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (e.name.endsWith(".jsonl")) files.push(p); } })(root);
-  } catch { return byTool; }
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".jsonl")) {
+        files.push(p);
+        try { if (fs.statSync(p).mtimeMs >= cutoff) fresh.add(p); } catch { }
+      } } })(root);
+  } catch { return (_corpus = { byTool, recentTools }); }
   for (const f of files) {
+    const isFresh = fresh.has(f);
     let lines: string[]; try { lines = fs.readFileSync(f, "utf8").split("\n"); } catch { continue; }
     // Outcomes are carried on the tool_result, which arrives in a later message than the
     // tool_use, so calls are held until their result resolves them.
@@ -482,6 +517,7 @@ function corpusByTool(): Map<string, CorpusCall[]> {
       if (m.type === "assistant") {
         for (const b of c) {
           if (b?.type !== "tool_use" || !b.id) continue;
+          if (isFresh && b.name) recentTools.add(String(b.name));
           const fields = EXEC_FIELDS.map(k => b.input?.[k]).filter(Boolean).map(String);
           if (!fields.length) continue;
           pending.set(b.id, { tool: String(b.name || "?"), call: { text: fields.join(" ").toLowerCase(), err: false } });
@@ -501,7 +537,40 @@ function corpusByTool(): Map<string, CorpusCall[]> {
     }
     for (const p of pending.values()) (byTool.get(p.tool) ?? byTool.set(p.tool, []).get(p.tool)!).push(p.call);
   }
-  return byTool;
+  return (_corpus = { byTool, recentTools });
+}
+
+/**
+ * Active lessons whose named tool is absent from the tool surface observed in the last
+ * SURFACE_DAYS of transcripts.
+ *
+ * A lesson is written against a tool and nothing revisits that assumption when the tool
+ * goes away, so the ledger accumulates advice that cannot fire and, worse, advice that
+ * PRESCRIBES a call the model cannot make. The trigger index already drops these
+ * silently (a tool with no corpus rows produces no attested token), which hides them:
+ * they stay `active`, keep occupying a domain budget slot, and keep rendering into
+ * PLAYBOOK.md where a reader takes them at face value.
+ *
+ * Two things are checked, both mechanical. `trigger.match` is the tool the lesson claims
+ * to fire on. An `mcp__server__tool` identifier anywhere in the prose is a tool the
+ * lesson tells the model to CALL. A remedy that names a tool in bare prose
+ * ("call a listTabs equivalent") is not detectable this way and still needs a human.
+ */
+export function deadToolLessons(): Array<{ id: string; missing: string; where: "trigger" | "action" }> {
+  const { recentTools } = corpusByTool();
+  if (!recentTools.size) return [];
+  const known = [...recentTools].map(t => t.toLowerCase());
+  const seen = (name: string) => known.some(t => t.includes(name.toLowerCase()));
+  const out: Array<{ id: string; missing: string; where: "trigger" | "action" }> = [];
+  for (const l of activeLessons()) {
+    if (l.trigger.type === "tool" && !seen(l.trigger.match)) {
+      out.push({ id: l.id, missing: l.trigger.match, where: "trigger" });
+      continue;
+    }
+    const named = new Set(`${l.action} ${l.statement}`.match(/mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+/g) || []);
+    for (const n of named) if (!seen(n)) out.push({ id: l.id, missing: n, where: "action" });
+  }
+  return out;
 }
 
 export function writeTriggerIndex(): string {
@@ -520,12 +589,71 @@ export function writeTriggerIndex(): string {
   // The three fixes below are why the token rules are now conservative to the point
   // of being boring: an unfired lesson costs nothing, a lesson that cries wolf on
   // 23.8% of all tool calls costs the credibility of every other lesson.
-  const STOP = /^(with|that|this|when|from|into|file|path|call|tool|using|value|string|every|before|after|never|always|instead|command|commands|should|which|there|their|contains|resolves|established|whose|argument|invocation|content|output|result|error|first|second)$/;
-  // MIN 4 CHARS, and no substring-prone fragments. `gh` is a real distinction to a
-  // human and noise to a substring matcher.
-  const clean = (arr: string[]) => [...new Set(arr.map(t => t.toLowerCase().trim()).filter(t => t.length >= 4 && !STOP.test(t)))];
-  const codeTerms = (t: string) => clean([...t.matchAll(/`([^`]{4,24})`/g)].map(m => m[1]!));
+  // BARE ENGLISH IS REJECTED WHEREVER IT COMES FROM. The tier partition below refuses
+  // English words scavenged from action prose, and the reason it gives - a prose word is
+  // rare inside command text precisely BECAUSE it is unrelated to commands - is a fact
+  // about the WORD, not about which field of the lesson it was copied out of. Applying
+  // the ban only to action-sourced tokens left the same class alive through
+  // `trigger.when`: `opens`, `quotes`, `ending`, `while`, `field`, `drive`, `float`. The
+  // list below is the closed set of prose words this ledger has actually produced plus
+  // the ordinary function words around them. Domain nouns that happen to be English
+  // (`journal`, `winget`, `heredoc`) are deliberately absent: they name a real thing in
+  // a real command, and the fire ceiling and lift floor judge them on evidence.
+  const STOP = /^(with|that|this|when|from|into|file|files|path|paths|call|calls|tool|tools|using|value|values|string|strings|every|before|after|never|always|instead|command|commands|should|which|there|their|contains|containing|resolves|established|whose|argument|arguments|invocation|content|output|outputs|result|results|error|errors|first|second|opens|opened|opening|closes|closing|quotes|quoted|quoting|ending|ends|while|field|fields|drive|float|prints|print|immediately|backslash|lines|line|target|targets|cannot|returns|return|reads|read|writes|write|appearing|appears|appear|followed|follows|follow|present|absent|missing|exists|existing|within|without|where|then|than|also|only|ever|either|neither|because|since|during|until|unless|though|although|however|therefore|rather|matching|matched|produce|produces|produced|expect|expected|ensure|ensures|avoid|avoids|prefer|prefers|check|checks|verify|verifies|confirm|confirms|attempt|attempts|invoke|invokes|issue|issues|replace|replaces|remove|removes|delete|deletes|create|creates|apply|applies|request|requests|response|message|messages|session|sessions|script|scripts|prose|word|words|text|name|names|type|types|kind|list|lists|item|items|entry|entries|number|numbers|same|each|both|some|more|most|less|least|other|another|whether|being|been|have|has|had|does|done|make|makes|made|take|takes|need|needs|used|uses|will|would|could|shall|must|even|just|very|much|many|such|into|onto|over|under|about|above|below|through|between|against|along|around|already|still|again|once|twice|next|last|prior|past|future|current|actual|real|true|false)$/;
+  /**
+   * Code shape, defined structurally rather than as "contains a non-letter".
+   *
+   * The looser test admitted `all.`, `for.`, `i.e.` and `2023` - sentence debris and a
+   * bare year, all of which read as code to a regex looking for any punctuation. A token
+   * earns the short-token exemption only if it has interior structure (a dot, dash,
+   * slash, colon or underscore with alphanumerics on both sides), leads with a flag or
+   * path character, or mixes letters and digits the way a version or codepage does. It
+   * must also contain a run of at least two alphanumerics and at least one letter, which
+   * is what separates `utf-8` from `i.e.` and `re.findall` from `2023`.
+   */
+  const codeShaped = (t: string) =>
+    /[a-z]/.test(t) && /[a-z0-9]{2}/.test(t) &&
+    (/[a-z0-9][._\-\/\\:=|>][a-z0-9]/.test(t) || /^[.~\-\/$*<]/.test(t) || /[a-z][0-9]|[0-9][a-z]/.test(t));
+  // An operator or escape sequence carries no English word to be confused with, so the
+  // word-length floor does not apply to it: `\\"` is the whole content of one lesson's
+  // condition and three characters long. It still has to clear the fire ceiling and the
+  // lift floor like every other candidate.
+  const symbolOnly = (t: string) => t.length >= 2 && !/[a-z0-9]/.test(t);
+  // MIN 5 CHARS for a bare word, and no substring-prone fragments. `gh` is a real
+  // distinction to a human and noise to a matcher; so is `find`, which is four letters
+  // of ordinary English that happens to also be a command name, and which fired on 4,241
+  // Bash calls to describe a loop that appeared in 62 of them. Code-shaped tokens keep
+  // the old floor of 4, because their structure is itself the distinguisher.
+  const usable = (t: string) => symbolOnly(t) || (codeShaped(t) ? t.length >= 4 : t.length >= 5 && !STOP.test(t));
+  const clean = (arr: string[]) => [...new Set(arr.map(t => t.toLowerCase().trim()).filter(usable))];
+  // Backticks are PAIRED by splitting, not matched by a regex over the span between two
+  // of them. `` /`([^`]{4,24})`/ `` slides forward when a span is too long and then
+  // matches the GAP between two later backticks, which is how the literal token `, or`
+  // came to be the trigger on a PowerShell null-coalescing lesson: it is the text
+  // between `?.` and `?:` in the action prose.
+  const codeTerms = (t: string) =>
+    clean(String(t).split("`").filter((_, i) => i % 2 === 1)
+      .filter(s => s.length <= 24 && (s.length >= 4 || !/[a-z0-9]/i.test(s))));
   const wordTerms = (t: string) => clean(t.toLowerCase().match(/[a-z0-9_.:>|\-]{4,}/g) || []);
+  /**
+   * The author's own condition, kept as a PHRASE.
+   *
+   * Reducing `for d in ... do ... find "$d"` to the single word `find` throws away
+   * everything that made it a condition and keeps the one part that is also an ordinary
+   * English word. A contiguous fragment of the same string - `find "$d"` - states the
+   * antecedent the lesson's action asserts, and a multi-word fragment cannot be hit by
+   * accident the way a four-letter word can. Fragments are split on the elisions and
+   * list separators authors actually write, capped at five words so a sentence of prose
+   * cannot pass as a command, and then judged on attestation like any other candidate:
+   * a fragment nothing in the corpus has ever run is dropped rather than shipped.
+   */
+  const phraseTerms = (t: string) => [...new Set(
+    String(t).toLowerCase().split(/\.{3,}|[;,\n]|\s+or\s+/)
+      .map(s => s.replace(/\s+/g, " ").trim())
+      .filter(s => s.length >= 5 && s.length <= 40)
+      .filter(s => s.split(" ").length <= 5)
+      .filter(s => s.includes(" ") || /[-_\/\\.:=|<>$'"*()[\]{}]/.test(s))
+  )];
 
   let ls = activeLessons().filter(l => l.trigger.type === "tool");
 
@@ -546,15 +674,73 @@ export function writeTriggerIndex(): string {
   }
 
   // Fire-rate ceiling: a rule may match at most this share of its tool's traffic.
-  const MAX_FIRE = 0.12;
-  const corpus = corpusByTool();
+  //
+  // 0.02, down from 0.12, swept over the corpus once the author's own condition became
+  // available as a phrase. A phrase is more precise than the word it replaces but not
+  // necessarily rarer - `python - <<` states its antecedent exactly and still matches 8%
+  // of Bash traffic - and because the tier ladder stops at the first tier that yields an
+  // admissible pick, a common phrase in the top tier displaced a rare code token that
+  // was doing a better job (`re.escape`, 0.3%). A tighter ceiling makes the ladder fall
+  // through instead. Swept over 88,770 historical calls: 0.12 gave 19.7% of calls firing
+  // at 2.54x lift, 0.04 gave 7.0% at 4.38x, 0.03 gave 5.2% at 4.87x, 0.02 gives 4.5% at
+  // 5.31x and holds 46 rules, one fewer than 0.03. The rule this costs is the UTF-8 one,
+  // whose only conjunction
+  // (`python -c` AND `utf-8`) matches 11% of Bash calls at 1.67x - a session-level fact
+  // rather than a call-level trigger, and it is already carried by PLAYBOOK.md and by
+  // the run-python capability.
+  // Swept to 0.02 on an 88,770-call corpus (see above). A sweep is an estimate of an
+  // operating point, not a constant: at 117,520 calls the same 0.02 produces 11.9% firing
+  // at 2.58x rather than the 4.5% at 5.31x it was chosen for. LKHS_MAX_FIRE re-opens the
+  // parameter so the sweep can be re-run against the current corpus instead of trusting a
+  // cached one. Unset, the value is exactly what was swept.
+  // Re-swept 2026-09-12 over 117,520 calls, scored on a held-out 30% window, and the
+  // ordering INVERTED: 0.005 gave 2.12x delivered lift, 0.02 gave 2.36x, 0.03 gave 2.46x,
+  // 0.04 gave 2.50x and saturates there. Looser is better now because the tier ladder
+  // stops falling through: at 0.02 six rules were keyed on action-codeish fall-through
+  // tokens and the 4.77x re.findall rule was excluded for sitting at 0.0205. At 0.03 it
+  // is back, and the [scratch] rule drops from 55.1% of delivery slots to 45.2%.
+  // 0.04 scored 0.04x higher, which is inside the 0.30x run-to-run drift of a re-render,
+  // so 0.03 is taken for the lower fire rate (15.9% against 18.1%).
+  // Sweep: command-center/pg-staging-2026-09-12/{sweep.sh,sweep_score.py}.
+  const MAX_FIRE = Number(process.env.LKHS_MAX_FIRE ?? 0.03);
+  // A token attested fewer times than this is indistinguishable from a token attested
+  // never: the lift estimate is noise and the rule is silent in practice. Rules keyed on
+  // a single historical occurrence were shipping as live index entries.
+  const MIN_HITS = 3;
+  const { byTool: corpus } = corpusByTool();
+  const allCalls = [...corpus.values()].flat();
+  const GLOBAL_BASE = allCalls.length ? allCalls.filter(c => c.err).length / allCalls.length : 0;
+
+  /**
+   * WORD BOUNDARIES, and the same semantics the hook uses.
+   *
+   * A bare substring test cannot tell `find .` from `re.findall`, from a path segment
+   * spelling `finder`, or from the word inside an `echo`. Boundaries are built here, at
+   * index time, and shipped in the rule as `re` so the hook does not have to derive them
+   * and cannot derive them differently. The guard is asserted only on the side where the
+   * token itself ends in a word character, so a flag like `--force` or a fragment like
+   * `<< 'eof'` still matches where it really occurs.
+   */
+  const bounded = (tok: string): string => {
+    const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return (/^[a-z0-9_]/.test(tok) ? "(?<![a-z0-9_])" : "") + esc + (/[a-z0-9_]$/.test(tok) ? "(?![a-z0-9_])" : "");
+  };
+  const reCache = new Map<string, RegExp>();
+  const rx = (tok: string) => reCache.get(tok) ?? reCache.set(tok, new RegExp(bounded(tok))).get(tok)!;
+  // Substring first, boundary second. Boundary hits are a subset of substring hits, so
+  // the cheap test prunes 44,000 rows down to a few hundred before any regex runs and
+  // the pass stays roughly as fast as it was when it was wrong.
+  const matches = (tool: string, toks: string[]): CorpusCall[] => {
+    const calls = corpus.get(tool);
+    if (!calls || !calls.length) return [];
+    return calls.filter(c => toks.every(t => c.text.includes(t)) && toks.every(t => rx(t).test(c.text)));
+  };
   const rate = (tool: string, toks: string[]): number => {
     const calls = corpus.get(tool);
     if (!calls || !calls.length) return 0;                    // no evidence: allow
-    let n = 0;
-    for (const c of calls) if (toks.every(t => c.text.includes(t))) n++;
-    return n / calls.length;
+    return matches(tool, toks).length / calls.length;
   };
+  const hits = (tool: string, toks: string[]): number => matches(tool, toks).length;
   // FAILURE LIFT. A trigger exists to fire on the calls that are about to go wrong, so
   // among the calls it matches, the failure rate should exceed the tool's base rate.
   // Fire rate alone cannot see this and hid a whole class of junk rules for a full
@@ -563,15 +749,20 @@ export function writeTriggerIndex(): string {
   // Measured over 64k historical calls, lift by token provenance came out 4.64x for
   // code tokens in trigger.when, 3.81x for code in the action, 2.41x for plain words —
   // the exact ordering the tier partition assumes, which is why the tiers stay.
+  //
+  // AGAINST THE GLOBAL BASE RATE, which is the denominator the floor was always
+  // described in and the one `learn:trigeval` reports. Measuring lift against the
+  // rule's own TOOL let a rule inherit its tool's error rate: `scratchpad` + `project`
+  // on Write scored 1.89x against Write's own base, cleared the 1.5x floor, shipped,
+  // and then measured 0.44x against the corpus - it was not predicting failure, it was
+  // predicting that Write fails more often than Read does. Two denominators meant the
+  // gate and the evaluation could never disagree out loud.
   const MIN_LIFT = 1.5;
   const lift = (tool: string, toks: string[]): number => {
-    const calls = corpus.get(tool);
-    if (!calls || calls.length < 40) return MIN_LIFT;          // too little evidence to judge: allow
-    const base = calls.filter(c => c.err).length / calls.length;
-    if (base <= 0) return MIN_LIFT;                            // tool never fails here: lift undefined
-    const hit = calls.filter(c => toks.every(t => c.text.includes(t)));
+    if (GLOBAL_BASE <= 0) return MIN_LIFT;                     // nothing ever fails: lift undefined
+    const hit = matches(tool, toks);
     if (hit.length < 8) return MIN_LIFT;                       // too few matches to estimate
-    return (hit.filter(c => c.err).length / hit.length) / base;
+    return (hit.filter(c => c.err).length / hit.length) / GLOBAL_BASE;
   };
 
   const rules = kept.map(l => {
@@ -592,13 +783,20 @@ export function writeTriggerIndex(): string {
     //
     // Tiers are tried best-first and a later tier is only reached if the earlier ones
     // yield nothing, so a rule keyed on real code is never diluted by prose.
-    const isCodeish = (t: string) => /[^a-z]/.test(t);   // flag, dot, dash, slash, digit, underscore
+    //
+    // The author's own condition leads, as a PHRASE first and then as tokens. A phrase
+    // drawn from `trigger.when` is the most direct statement of the antecedent that
+    // exists anywhere in the record, and it is the thing a single word from the same
+    // string throws away. Phrases share the tier with when-code tokens so the pick loop
+    // can pair them: `python -c` alone matches 17% of Bash traffic, which is over the
+    // ceiling, and `python -c` AND `utf-8` matches 11% with the failure lift intact.
     const whenToks = l.trigger.when ? wordTerms(l.trigger.when) : [];
     const tiers = [
-      [...(l.trigger.when ? codeTerms(l.trigger.when) : []), ...whenToks.filter(isCodeish)],
+      [...(l.trigger.when ? phraseTerms(l.trigger.when) : []),
+       ...(l.trigger.when ? codeTerms(l.trigger.when) : []), ...whenToks.filter(codeShaped)],
       [...codeTerms(l.action), ...codeTerms(l.statement)],
-      whenToks.filter(t => !isCodeish(t)),               // author-supplied plain words: allowed
-      wordTerms(l.action).filter(isCodeish),             // prose, but code-shaped (e.g. `--force`, `utf-8`)
+      whenToks.filter(t => !codeShaped(t)),              // author-supplied plain words: allowed
+      wordTerms(l.action).filter(codeShaped),            // prose, but code-shaped (e.g. `--force`, `utf-8`)
       // Deliberately absent: bare English words from action prose. That tier is the
       // entire source of the junk rules and admitting it is what this change reverses.
     ];
@@ -617,13 +815,18 @@ export function writeTriggerIndex(): string {
     const SOURCE = ["when-code", "action-code", "when-word", "action-codeish"] as const;
     let when: string[] = [];
     let tokenSource: string | null = null;
+    // A phrase is held to attestation alone rather than to the rate floor. The floor
+    // exists to reject prose fragments that occur in no real command; a multi-word
+    // fragment that occurs in three real commands is rare on purpose, and low recall on
+    // a precise condition is the trade this channel is supposed to make.
+    const floorFor = (t: string) => (t.includes(" ") ? MIN_HITS / (corpus.get(l.trigger.match)?.length || 1) : MIN_FIRE);
     // Walk the tiers in order and STOP at the first that yields a usable token. Pooling
     // them and re-sorting by rarity would silently undo the partition, since a rare
     // prose word always beats a common code token on rarity alone.
     for (let ti = 0; ti < tiers.length && !when.length; ti++) {
       const scored = [...new Set(tiers[ti]!)].filter(notTool)
         .map(t => ({ t, r: rate(l.trigger.match, [t]) }))
-        .filter(x => x.r >= MIN_FIRE)
+        .filter(x => x.r >= floorFor(x.t))
         .sort((a, b) => a.r - b.r);
       const pick: string[] = [];
       for (const { t } of scored) {
@@ -637,14 +840,22 @@ export function writeTriggerIndex(): string {
       // on calls that were going to succeed, which is worse than staying silent: it
       // spends one of the two delivery slots and teaches the reader to discount the
       // channel. Observed at 0.55x and 0.70x on the highest-volume rules in the index.
-      if (pick.length && rate(l.trigger.match, pick) <= MAX_FIRE && lift(l.trigger.match, pick) >= MIN_LIFT) {
-        when = pick; tokenSource = SOURCE[ti]!;
+      if (pick.length && hits(l.trigger.match, pick) >= MIN_HITS
+          && rate(l.trigger.match, pick) <= MAX_FIRE && lift(l.trigger.match, pick) >= MIN_LIFT) {
+        when = pick;
+        // A pick containing a multi-word fragment is reported separately so the
+        // provenance table in learn:trigeval can say whether phrases carry more signal
+        // than the single tokens they replaced.
+        tokenSource = pick.some(t => t.includes(" ")) && ti === 0 ? "when-phrase" : SOURCE[ti]!;
       }
     }
     return {
       id: l.id,
       match: l.trigger.match,
       when: when.length ? when : null,
+      // The boundary regexes the hook matches on, one per token, already escaped. Shipped
+      // rather than derived at the far end so the two cannot drift apart.
+      re: when.length ? when.map(bounded) : null,
       tokenSource,
       action: trim(l.action, 240),
       sessions: l.sessions.length,
@@ -753,6 +964,19 @@ if (require.main === module) {
   } else if (a[0] === "--render") {
     console.log("wrote " + writePlaybookFile());
     console.log("wrote " + writeTriggerIndex());
+    // Surfaced on every render, because the trigger index drops a lesson whose tool has
+    // gone away without saying so and the lesson then looks healthy from every angle
+    // except the one that matters.
+    const dead = deadToolLessons();
+    if (dead.length) {
+      console.log(`\n${dead.length} active lesson(s) name a tool absent from the last ${SURFACE_DAYS} days of traffic:`);
+      for (const d of dead) console.log(`  ${d.id}  ${d.where}: ${d.missing}`);
+      console.log(`retire with: npm run learn -- --retire <id> "<why>"`);
+    }
+  } else if (a[0] === "--deadtools") {
+    const dead = deadToolLessons();
+    if (!dead.length) { console.log("every active lesson names a tool seen in recent traffic."); }
+    for (const d of dead) console.log(`${d.id}  ${d.where}: ${d.missing}`);
   } else if (a[0] === "--budget") {
     const r = enforceBudget();
     console.log(r.length ? r.map(x => `${x.domain}: evicted ${x.evicted}`).join("\n") : "all domains within budget");

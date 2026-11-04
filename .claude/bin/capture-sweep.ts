@@ -39,12 +39,14 @@ function excluded(cwd: string, list: string[]): boolean {
   return list.some(ex => ex && (c === ex || c.startsWith(ex + "/")));
 }
 
+const HEAD_BYTES = 262144;
+
 /** Read a transcript's head once (cwd is on the first turn; automation markers
  *  are in the first user message), so large transcripts are not loaded whole. */
 function transcriptHead(file: string): string {
   const fd = fs.openSync(file, "r");
   try {
-    const buf = Buffer.alloc(65536);
+    const buf = Buffer.alloc(HEAD_BYTES);
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
     return buf.toString("utf-8", 0, n);
   } finally { fs.closeSync(fd); }
@@ -65,8 +67,16 @@ function transcriptCwd(head: string): string {
 // the transcript — the STABLE INSTRUCTION PHRASES are the durable signature.
 // the user's own headless -p sessions match none of these and stay captured
 // (they are exactly what the sweep exists to cover).
-const AUTOMATION_RE = /output ONLY the requested JSON|BEGIN_FACTS|BEGIN_CONVERSATION|BEGIN_SESSION_LOG|BEGIN_PROJECT_DIGEST|LKHS ambient compile|archivist instructions|injected by a personal memory system under a privacy profile/;
-function isAutomation(head: string): boolean {
+// The marker list was enumerated by hand and went stale: salience, hindsight, drift,
+// reconcile, cluster, card and counterfactual runs all grew their own BEGIN_ markers
+// that were never added here, so their transcripts entered the ledger as real
+// sessions. Each such capture spawns another `claude -p` summarizer, which writes
+// another transcript, which the next sweep captures — a self-feeding loop that pinned
+// the CPU for hours (2026-08-13). Match the BEGIN_ marker FAMILY rather than a fixed
+// list so a new automation kind is covered the day it is written. The miners whose
+// prompts carry no BEGIN_ marker are matched on their opening instruction line.
+const AUTOMATION_RE = /BEGIN_[A-Z][A-Z_]{3,}|output ONLY the requested JSON|LKHS ambient compile|archivist instructions|injected by a personal memory system under a privacy profile|You are writing entries for a procedural-memory ledger|You are extracting BEHAVIOURAL PREFERENCES|You are building an (evaluation question set|episodic record)|You are mining a developer's past AI-assistant sessions|<scheduled-task name="hearth-calendar-cache"|Review this change for security vulnerabilities\./;
+function matchesAutomationPrompt(head: string): boolean {
   for (const l of head.split("\n")) {
     if (!l.trim()) continue;
     try {
@@ -77,7 +87,53 @@ function isAutomation(head: string): boolean {
       return AUTOMATION_RE.test(text);   // decide on the FIRST user turn only
     } catch { /* partial line */ }
   }
-  return false;
+  // No COMPLETE user turn inside the head buffer. An automation payload is a single
+  // JSON line carrying a whole pasted session log, and the big ones overflow the
+  // buffer, so every line fails to parse and the loop above falls through. Those are
+  // precisely the largest automation runs, and returning false here sent them to the
+  // summarizer as if they were the user's own sessions. Scan the raw head instead:
+  // the markers are distinctive enough to be safe as a last resort.
+  return AUTOMATION_RE.test(head);
+}
+
+/** The human turns in the head, in order. Tool results, system-injected blocks and
+ *  interrupt notices are not things a person typed. */
+function humanTurns(head: string): string[] {
+  const turns: string[] = [];
+  for (const l of head.split("\n")) {
+    if (!l.trim()) continue;
+    let o: any; try { o = JSON.parse(l); } catch { continue; }
+    if (o.type !== "user") continue;
+    const c = o.message?.content;
+    let t = "";
+    if (typeof c === "string") t = c;
+    else if (Array.isArray(c)) {
+      if (c.some((b: any) => b?.type === "tool_result")) continue;
+      t = c.map((b: any) => (b?.type === "text" ? b.text || "" : "")).join("\n");
+    }
+    t = t.trim();
+    if (!t || t.startsWith("<")) continue;                       // system-shaped injection
+    if (/^(Caveat:|\[Request interrupted)/.test(t)) continue;
+    turns.push(t);
+  }
+  return turns;
+}
+
+// A prompt payload and a worked session have inverse SHAPES, and the shape holds for
+// automation nobody has named yet. A `claude -p` call is one enormous instruction
+// followed by a handful of reply lines; a session someone sat through opens with a
+// short line and accumulates turns. All three conditions have to hold together, so a
+// long opening prompt is not enough on its own to disqualify a real session: it also
+// has to be the ONLY human turn and the transcript has to end almost immediately.
+// The whole file must fit in the head buffer, because the line count is otherwise
+// unknown and a guess in that direction would discard real work.
+const SOLO_PROMPT_CHARS = 600;
+const SHORT_TRANSCRIPT_LINES = 20;
+function isPromptPayload(head: string, bytes: number): boolean {
+  if (bytes > HEAD_BYTES) return false;
+  if (head.split("\n").filter(l => l.trim()).length >= SHORT_TRANSCRIPT_LINES) return false;
+  const turns = humanTurns(head);
+  return turns.length === 1 && turns[0]!.length > SOLO_PROMPT_CHARS;
 }
 
 async function main() {
@@ -97,11 +153,23 @@ async function main() {
     try { fs.writeFileSync(SWEEPLOCK, String(process.pid), { flag: "wx" }); }
     catch {
       let stale = false;
-      try { stale = Date.now() - fs.statSync(SWEEPLOCK).mtimeMs > 7200_000; } catch { stale = true; }
+      // Stale = the holder is dead. Age alone was the old test, and a 2.4h burst sweep
+      // (2026-10-26) outlived the 2h window, so the next hourly run started a second
+      // concurrent sweep beside it. Age still frees a lock whose PID was reused.
+      try {
+        const holder = Number(fs.readFileSync(SWEEPLOCK, "utf-8").trim());
+        let alive = false;
+        try { if (holder > 0) { process.kill(holder, 0); alive = true; } } catch { alive = false; }
+        stale = !alive || Date.now() - fs.statSync(SWEEPLOCK).mtimeMs > 6 * 3600_000;
+      } catch { stale = true; }
       if (!stale) { console.log("Another sweep is already running; exiting."); return; }
       try { fs.unlinkSync(SWEEPLOCK); fs.writeFileSync(SWEEPLOCK, String(process.pid), { flag: "wx" }); }
       catch { console.log("Could not acquire sweep lock; exiting."); return; }
     }
+    // Release on ANY exit path, not just the happy one. A throw mid-loop used to
+    // skip the unlink at the end of main(), so the next hourly run found a live
+    // lock and refused to start until the 2h staleness window expired.
+    process.on("exit", () => { try { fs.unlinkSync(SWEEPLOCK); } catch { /* already gone */ } });
   }
 
   // Recursion guard for the summarizer calls captureSession spawns.
@@ -122,9 +190,13 @@ async function main() {
     }
   }
 
-  let considered = 0, captured = 0, skipped = 0, excl = 0, active = 0, automation = 0;
+  let considered = 0, captured = 0, skipped = 0, excl = 0, active = 0, automation = 0, structural = 0, vanished = 0;
   for (const file of transcripts) {
-    const mtime = fs.statSync(file).mtimeMs;
+    // A transcript can disappear between the readdir scan above and this stat.
+    // An unhandled ENOENT here aborted the whole sweep mid-run and left the lock
+    // behind, which then blocked every later run for two hours.
+    let mtime: number, bytes: number;
+    try { const st = fs.statSync(file); mtime = st.mtimeMs; bytes = st.size; } catch { vanished++; continue; }
     if (mtime > settleCutoff) { active++; continue; } // still being written; let it settle
     if (!all && mtime < cutoff) continue;
     considered++;
@@ -132,7 +204,10 @@ async function main() {
     const head = transcriptHead(file);
     const cwd = transcriptCwd(head);
     if (excluded(cwd, exclude)) { excl++; continue; }
-    if (isAutomation(head)) { automation++; continue; } // LKHS's own claude -p runs
+    // Named prompt families first (one regex test), then the shape test that covers
+    // every other pipeline's `claude -p` calls without needing their prompts enumerated.
+    if (matchesAutomationPrompt(head)) { automation++; continue; }
+    if (isPromptPayload(head, bytes)) { automation++; structural++; continue; }
     const sessionId = path.basename(file, ".jsonl");
 
     if (dry) {
@@ -146,7 +221,10 @@ async function main() {
   }
 
   if (!dry) { try { fs.unlinkSync(SWEEPLOCK); } catch { /* gone */ } }
-  console.log(`\nSweep done. considered=${considered} captured=${captured} skipped=${skipped} excluded=${excl} automation=${automation} active=${active} (window: ${all ? "all" : hours + "h"})`);
+  console.log(`\nSweep done. considered=${considered} captured=${captured} skipped=${skipped} excluded=${excl} automation=${automation} (${structural} by shape) active=${active} vanished=${vanished} (window: ${all ? "all" : hours + "h"})`);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// Exit explicitly: once the embedder has loaded, a handle keeps the loop alive, and the
+// finished sweep sat idle until Task Scheduler's 45-minute limit killed it, so the task
+// read "Running" most of every hour (2026-10-30).
+main().then(() => process.exit(0), e => { console.error(e); process.exit(1); });

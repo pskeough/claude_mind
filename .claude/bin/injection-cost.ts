@@ -55,11 +55,24 @@ rows.push({
 const trig = (() => { try { return JSON.parse(read(path.join(memDir(), "lesson-triggers.json"))); } catch { return { rules: [] }; } })();
 const avgAction = trig.rules.length
   ? trig.rules.reduce((a: number, r: any) => a + String(r.action || "").length, 0) / trig.rules.length : 0;
+// Fire volume is read, not asserted. lesson-fires.jsonl carries one line per hook fire
+// with the ids it delivered, so both the frequency and the items-per-fire that the token
+// estimate multiplies by are observable here. A fire RATE would need a denominator this
+// file does not have (total tool calls live in the transcripts), and the failure lift
+// needs an outcome per call, so both stay with `npm run learn:trigeval`, which replays
+// the rule set over every recorded call and recomputes them from scratch.
+const FIRE_WINDOW_DAYS = 14;
+const fires = read(path.join(memDir(), "lesson-fires.jsonl")).split("\n").filter(Boolean)
+  .map(l => { try { return JSON.parse(l); } catch { return null; } })
+  .filter((f: any) => f && Date.parse(f.ts) >= Date.now() - FIRE_WINDOW_DAYS * 86_400_000);
+const firesPerDay = fires.length / FIRE_WINDOW_DAYS;
+const perFire = fires.length
+  ? fires.reduce((a: number, f: any) => a + (f.ids?.length ?? 0), 0) / fires.length : 2;
 rows.push({
   channel: "PreToolUse trigger (2 max)",
-  tokens: Math.ceil((avgAction * 2 + 220) / 4),
-  when: "5.5% of tool calls",
-  note: `${trig.rules.length} rules, 4.54x failure lift`,
+  tokens: Math.ceil((avgAction * perFire + 220) / 4),
+  when: fires.length ? `~${firesPerDay.toFixed(0)}/day, last ${FIRE_WINDOW_DAYS}d` : "per matching tool call",
+  note: `${trig.rules.length} rules, ${perFire.toFixed(1)} delivered per fire (rate + lift: npm run learn:trigeval)`,
 });
 
 console.log(`injection cost, ~4 chars/token\n`);

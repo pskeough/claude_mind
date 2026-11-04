@@ -34,6 +34,7 @@ export function sha256(text: string): string {
  *  (resume-by-project, recency, global vs specific queries). */
 export function layerOf(file: string): string {
   const f = file.replace(/\\/g, "/");
+  if (f.startsWith("automemory/")) return "automemory"; // mirrored Claude Code per-project memory: hand-written by the user, not derived here
   if (f.startsWith("lessons/")) return "lesson";   // procedural memory: mined lessons, retrievable like any other layer
   if (f.startsWith("skills/")) return "skill";     // synthetic namespace: SKILL.md name+description, for the semantic skill router
   if (f.startsWith("persona_clinical/")) return "persona-clinical"; // quarantined health tier: retrievable only on direct match, never boosted/always-on
@@ -85,6 +86,15 @@ export function getDb(dbPath = defaultDbPath()): Database.Database {
   migrateSchema(db); // P2: additive, nullable, idempotent (facts + chunk meta)
   _db = db; _dbPath = dbPath;
   return db;
+}
+
+/** For long-lived readers (daemon, shared MCP server). The vec0 KNN is a brute-force
+ *  scan of every stored vector; with the default 16 MB page cache each query re-read
+ *  them all. Measured 2026-10-30: knn 670-3,400ms -> 330-535ms. mmap pages are shared
+ *  with the OS file cache, so they do not count against the process's private memory. */
+export function tuneForServing(db = getDb()): void {
+  db.pragma("cache_size = -131072");   // 128 MB
+  db.pragma("mmap_size = 1073741824"); // up to 1 GB, bounded by the file size
 }
 
 /**
@@ -354,15 +364,116 @@ export interface Hit {
  * pull a candidate pool by distance, then collapse to one best chunk per file and
  * take the top k. Optional layer filter for scoped queries.
  */
+// ---- in-memory vector index (the daemon only) ---------------------------------
+// vec0 KNN is a brute-force scan that reads every stored vector out of SQLite pages
+// on each call: ~500ms per knn with a warm 128 MB cache, several calls per gate, all
+// synchronous on the daemon's event loop. Holding the same vectors in one Float32Array
+// (~150 MB at 98k chunks) makes the scan a tight loop over memory. Same cosine, same
+// candidate pool, same post-filtering, so results match vec0 (checked 2026-10-30).
+// Kept fresh lazily: at most every MEM_RECHECK_MS, PRAGMA data_version says whether
+// another connection committed; if so, rows are diffed on (id, chunk_hash) and only
+// new or changed vectors are read back.
+interface MemIndex { ids: Int32Array; hashes: string[]; mat: Float32Array; norms: Float32Array; version: number; checkedAt: number }
+let _mem: MemIndex | null = null;
+let _memEnabled = false;
+const MEM_RECHECK_MS = 30_000;
+
+/** Opt in to the in-memory KNN index. Long-lived, query-heavy processes only. */
+export function enableMemoryIndex(): void { _memEnabled = true; }
+
+function f32Norm(v: Float32Array): number { let s = 0; for (let i = 0; i < v.length; i++) s += v[i]! * v[i]!; return Math.sqrt(s) || 1; }
+
+function memIndex(db: Database.Database): MemIndex | null {
+  if (!_memEnabled) return null;
+  const now = Date.now();
+  if (_mem && now - _mem.checkedAt < MEM_RECHECK_MS) return _mem;
+  const version = db.pragma("data_version", { simple: true }) as number;
+  if (_mem && _mem.version === version) { _mem.checkedAt = now; return _mem; }
+
+  const rows = db.prepare("SELECT id, chunk_hash AS h FROM chunks ORDER BY id").all() as Array<{ id: number; h: string }>;
+  const prev = new Map<number, number>();
+  if (_mem) for (let i = 0; i < _mem.ids.length; i++) prev.set(_mem.ids[i]!, i);
+  const reuse = (id: number, h: string) => { const j = prev.get(id); return j !== undefined && _mem!.hashes[j] === h ? j : -1; };
+  const missing = rows.filter(r => reuse(r.id, r.h) < 0).length;
+
+  // A cold start (or a mass re-embed) reads every vector in one sequential scan;
+  // a handful of changes are fetched by rowid.
+  const fresh = new Map<number, Float32Array>();
+  const toF32 = (b: Buffer) => new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + DIM * 4));
+  if (missing > 2000) {
+    for (const r of db.prepare("SELECT rowid AS id, embedding AS e FROM vec_chunks").iterate() as IterableIterator<{ id: number; e: Buffer }>) fresh.set(r.id, toF32(r.e));
+  } else if (missing) {
+    const one = db.prepare("SELECT embedding FROM vec_chunks WHERE rowid = ?").pluck();
+    for (const r of rows) if (reuse(r.id, r.h) < 0) { const b = one.get(r.id) as Buffer | undefined; if (b) fresh.set(r.id, toF32(b)); }
+  }
+
+  const ids = new Int32Array(rows.length), norms = new Float32Array(rows.length), mat = new Float32Array(rows.length * DIM);
+  const hashes: string[] = [];
+  let n = 0;
+  for (const r of rows) {
+    const j = reuse(r.id, r.h);
+    if (j >= 0) { mat.set(_mem!.mat.subarray(j * DIM, (j + 1) * DIM), n * DIM); norms[n] = _mem!.norms[j]!; }
+    else { const v = fresh.get(r.id); if (!v) continue; mat.set(v, n * DIM); norms[n] = f32Norm(v); }
+    ids[n] = r.id; hashes.push(r.h); n++;
+  }
+  _mem = { ids: ids.slice(0, n), hashes, mat: n === rows.length ? mat : mat.slice(0, n * DIM), norms: norms.slice(0, n), version, checkedAt: now };
+  return _mem;
+}
+
+/** Top `pool` chunk ids by cosine distance, ascending, from the in-memory index. */
+function memKnn(mem: MemIndex, queryVec: number[], pool: number): Array<{ id: number; distance: number }> {
+  const q = new Float32Array(queryVec);
+  const qn = f32Norm(q);
+  const { mat, norms } = mem, n = norms.length;
+  // Bounded min-heap on similarity: O(n log pool) instead of sorting all n.
+  const hs = new Float64Array(pool), hi = new Int32Array(pool);
+  let size = 0;
+  for (let r = 0; r < n; r++) {
+    // Four accumulators: lets V8 pipeline the multiply-adds (DIM is a multiple of 4).
+    let d0 = 0, d1 = 0, d2 = 0, d3 = 0; const off = r * DIM;
+    for (let i = 0; i < DIM; i += 4) {
+      d0 += q[i]! * mat[off + i]!; d1 += q[i + 1]! * mat[off + i + 1]!;
+      d2 += q[i + 2]! * mat[off + i + 2]!; d3 += q[i + 3]! * mat[off + i + 3]!;
+    }
+    const sim = (d0 + d1 + d2 + d3) / (qn * norms[r]!);
+    if (size < pool) {
+      let c = size++; hs[c] = sim; hi[c] = r;
+      while (c > 0) { const p = (c - 1) >> 1; if (hs[p]! <= hs[c]!) break; [hs[p], hs[c]] = [hs[c]!, hs[p]!]; [hi[p], hi[c]] = [hi[c]!, hi[p]!]; c = p; }
+    } else if (sim > hs[0]!) {
+      hs[0] = sim; hi[0] = r;
+      let c = 0;
+      for (;;) { const l = 2 * c + 1, rr = l + 1; let m = c; if (l < size && hs[l]! < hs[m]!) m = l; if (rr < size && hs[rr]! < hs[m]!) m = rr; if (m === c) break; [hs[m], hs[c]] = [hs[c]!, hs[m]!]; [hi[m], hi[c]] = [hi[c]!, hi[m]!]; c = m; }
+    }
+  }
+  const out: Array<{ id: number; distance: number }> = [];
+  for (let i = 0; i < size; i++) out.push({ id: mem.ids[hi[i]!]!, distance: 1 - hs[i]! });
+  return out.sort((a, b) => a.distance - b.distance);
+}
+
+type KnnRow = { file: string; chunkIndex: number; text: string; layer: string; meta: string | null; tier: string | null; distance: number };
+
 export function knn(queryVec: number[], k = 4, opts: { layers?: string[]; exclude?: string[]; includeCold?: boolean; ceiling?: number } = {}): Hit[] {
   const db = getDb();
   const pool = Math.min(1000, Math.max(k * 50, 200));
-  const rows = db.prepare(`
-    SELECT c.file AS file, c.chunk_index AS chunkIndex, c.text AS text, c.layer AS layer, c.meta AS meta, c.tier AS tier, m.distance AS distance
-    FROM (SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?) m
-    JOIN chunks c ON c.id = m.rowid
-    ORDER BY m.distance
-  `).all(toBlob(queryVec), pool) as Array<{ file: string; chunkIndex: number; text: string; layer: string; meta: string | null; tier: string | null; distance: number }>;
+  const mem = memIndex(db);
+  let rows: KnnRow[];
+  if (mem) {
+    const top = memKnn(mem, queryVec, pool);
+    const byId = new Map<number, any>();
+    for (const r of db.prepare(`
+      SELECT id, file, chunk_index AS chunkIndex, text, layer, meta, tier FROM chunks
+      WHERE id IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify(top.map(t => t.id))) as any[]) byId.set(r.id, r);
+    rows = [];
+    for (const t of top) { const r = byId.get(t.id); if (r) rows.push({ file: r.file, chunkIndex: r.chunkIndex, text: r.text, layer: r.layer, meta: r.meta, tier: r.tier, distance: t.distance }); }
+  } else {
+    rows = db.prepare(`
+      SELECT c.file AS file, c.chunk_index AS chunkIndex, c.text AS text, c.layer AS layer, c.meta AS meta, c.tier AS tier, m.distance AS distance
+      FROM (SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?) m
+      JOIN chunks c ON c.id = m.rowid
+      ORDER BY m.distance
+    `).all(toBlob(queryVec), pool) as KnnRow[];
+  }
 
   const layers = opts.layers && opts.layers.length ? new Set(opts.layers) : null;
   const excluded = opts.exclude && opts.exclude.length ? new Set(opts.exclude) : null;
@@ -402,9 +513,12 @@ export function knn(queryVec: number[], k = 4, opts: { layers?: string[]; exclud
  */
 export function layerKnn(queryVec: number[], layer: string, k = 8): Hit[] {
   const db = getDb();
+  // CROSS JOIN pins the loop order: filter chunks by layer first, then fetch each
+  // vector by rowid. With a plain JOIN the planner scanned the whole vec0 table and
+  // probed chunks per row: 240-3,240ms per call for 36 skill rows (2026-10-30).
   const rows = db.prepare(`
     SELECT c.file AS file, c.chunk_index AS chunkIndex, c.text AS text, c.layer AS layer, v.embedding AS emb
-    FROM chunks c JOIN vec_chunks v ON v.rowid = c.id
+    FROM chunks c CROSS JOIN vec_chunks v ON v.rowid = c.id
     WHERE c.layer = ?
   `).all(layer) as Array<{ file: string; chunkIndex: number; text: string; layer: string; emb: Uint8Array }>;
 
@@ -869,8 +983,15 @@ export function hybridSearch(queryVec: number[], queryText: string, k: number,
 // tool or by editing .claude/memory/sealed.json ({"files": ["journal/X.md", ...]}).
 let _sealed: Set<string> | null = null;
 let _sealedMtime = -2;
+let _sealedCheckedAt = 0;
 export function sealedFile(): string { return path.join(path.dirname(defaultDbPath()), "sealed.json"); }
 export function sealedSet(): Set<string> {
+  // isSealed runs once per candidate row, ~1,000 times per knn, and each call used to
+  // stat sealed.json: ~200ms of every gate (profiled 2026-10-30). A seal still takes
+  // effect within a second.
+  const now = Date.now();
+  if (_sealed && now - _sealedCheckedAt < 1000) return _sealed;
+  _sealedCheckedAt = now;
   const p = sealedFile();
   let mtime = -1;
   try { mtime = fs.statSync(p).mtimeMs; } catch { /* absent = empty */ }

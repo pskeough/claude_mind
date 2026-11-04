@@ -11,7 +11,7 @@
 import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import * as path from "path";
-import { vaultRoot } from "./config";
+import { vaultRoot, headlessFlags, llmAllow } from "./config";
 
 const VAULT_ROOT = vaultRoot();
 const LOG_FILE = path.join(VAULT_ROOT, ".claude", "logs", "ambient.log");
@@ -98,12 +98,17 @@ async function main() {
   // unescaped, so a multiline -p argument is truncated at the first newline and
   // any flag after it is silently dropped. Flags stay simple single tokens (the
   // allowlist is quoted for cmd because Bash(...) contains spaces).
+  if (!llmAllow("pipeline")) {
+    await log(`pipeline:skipped ${pipeline} (daily model-call budget reached)`);
+    process.exit(0);
+  }
   const child = spawn("claude", [
     "-p",
     "--fork-session",
     "--allowedTools", `"${ALLOWED_TOOLS}"`,
     "--max-budget-usd", MAX_BUDGET_USD,
-    "--output-format", "text"
+    "--output-format", "text",
+    ...headlessFlags()
   ], { cwd: VAULT_ROOT, stdio: ["pipe", "inherit", "inherit"], shell: true });
   child.stdin?.end(prompt + "\n");
 

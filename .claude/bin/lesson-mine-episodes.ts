@@ -131,6 +131,12 @@ function collect(): Raw[] {
   return [...bySession.values()];
 }
 
+// The schema asks for arrays, but a model with exactly one thing to report writes a
+// bare string about a third of the time, and occasionally null. Every array-typed field
+// is read through this so a shape the prompt did not ask for costs one field rather
+// than the whole batch.
+const asArray = (v: any): any[] => Array.isArray(v) ? v : (v === null || v === undefined || v === "" ? [] : [v]);
+
 const loadWatermark = (): Set<string> => {
   try { return new Set(JSON.parse(fs.readFileSync(WATERMARK, "utf8")).sessions || []); } catch { return new Set(); }
 };
@@ -206,34 +212,42 @@ async function main() {
   const replies = await llmMap(jobs, { label: "episodes" });
 
   const out: Episode[] = [];
-  let unclear = 0;
+  let unclear = 0, malformed = 0;
   for (let i = 0; i < sessions.length; i++) {
     const r = sessions[i]!;
-    const j = parseJson(replies[i] || "");
-    if (!j || !j.goal) continue;
-    if (j.outcome === "unclear" && !(j.worked?.length || j.friction?.length)) { unclear++; done.add(r.session); continue; }
-    out.push({
-      session: r.session, project: r.project,
-      date: new Date(r.ts || Date.now()).toISOString().slice(0, 10),
-      goal: String(j.goal), approach: String(j.approach || ""),
-      outcome: ["shipped", "partial", "abandoned", "unclear"].includes(j.outcome) ? j.outcome : "unclear",
-      worked: (j.worked || []).map(String).slice(0, 3),
-      friction: (j.friction || []).map(String).slice(0, 3),
-      differently: String(j.differently || ""),
-      transferable: String(j.transferable || ""),
-      domain: String(j.domain || "other"),
-      scope: scopeOfProject(r.project),
-    });
-    done.add(r.session);
+    // Per ITEM, not per batch. The model calls are already paid for by the time the
+    // replies come back, so one reply in an unexpected shape must cost that one episode
+    // and nothing else. A session that fails here stays off the watermark and is retried.
+    try {
+      const j = parseJson(replies[i] || "");
+      if (!j || !j.goal) continue;
+      if (j.outcome === "unclear" && !(asArray(j.worked).length || asArray(j.friction).length)) { unclear++; done.add(r.session); continue; }
+      out.push({
+        session: r.session, project: r.project,
+        date: new Date(r.ts || Date.now()).toISOString().slice(0, 10),
+        goal: String(j.goal), approach: String(j.approach || ""),
+        outcome: ["shipped", "partial", "abandoned", "unclear"].includes(j.outcome) ? j.outcome : "unclear",
+        worked: asArray(j.worked).map(String).slice(0, 3),
+        friction: asArray(j.friction).map(String).slice(0, 3),
+        differently: String(j.differently || ""),
+        transferable: String(j.transferable || ""),
+        domain: String(j.domain || "other"),
+        scope: scopeOfProject(r.project),
+      });
+      done.add(r.session);
+    } catch { malformed++; }
   }
   fs.mkdirSync(path.dirname(EPISODES), { recursive: true });
+  // Episodes land on disk BEFORE the watermark advances. Reversed, a failure between
+  // the two writes would mark sessions mined that were never recorded, and a session
+  // is only ever visited once.
   fs.appendFileSync(EPISODES, out.map(e => JSON.stringify(e)).join("\n") + (out.length ? "\n" : ""));
   saveWatermark(done);
 
   const byDomain: Record<string, number> = {};
   const byOutcome: Record<string, number> = {};
   for (const e of out) { byDomain[e.domain] = (byDomain[e.domain] || 0) + 1; byOutcome[e.outcome] = (byOutcome[e.outcome] || 0) + 1; }
-  console.log(`\n  extracted ${out.length} episodes (${unclear} had no arc)`);
+  console.log(`\n  extracted ${out.length} episodes (${unclear} had no arc${malformed ? `, ${malformed} unreadable reply` + (malformed === 1 ? "" : "s") : ""})`);
   console.log(`  outcomes: ${JSON.stringify(byOutcome)}`);
   console.log(`  domains: ${Object.entries(byDomain).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([d, n]) => `${d}(${n})`).join(" ")}`);
   console.log(`  transferable noted: ${out.filter(e => e.transferable).length}`);

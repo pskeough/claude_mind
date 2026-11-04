@@ -4,7 +4,7 @@
  * One nightly claude -p judgment over the system's own state answers: "if I could
  * tell the user three things this morning, what are they and why". Inputs are all
  * ground artifacts the other passes maintain: state.json (deadlines/lanes/flags),
- * pending reconcile proposals, recently fired intentions, the hindsight headline.
+ * pending reconcile proposals, still-armed intentions, the hindsight headline.
  *
  * Output: .claude/memory/salience.md; state-rollup embeds it at the top of TODAY.md
  * while fresh (<36h). Grounding rules are hard constraints in the prompt: no
@@ -16,8 +16,9 @@
 import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { vaultRoot, memDir, summaryModel, claudeBin } from "./config";
+import { vaultRoot, memDir, summaryModel, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { toAscii } from "./capture-session";
+import { loadIntentions, statusOf, type Intention } from "./prospective";
 
 const VAULT = vaultRoot();
 const MEM = memDir();
@@ -39,12 +40,36 @@ function pendingProposals(): string {
   } catch { return ""; }
 }
 
-function recentIntentions(): string {
+/**
+ * Commitments still waiting on their trigger.
+ *
+ * Was "reminders fired in the last 48h", which points the wrong way. Firing means a
+ * reminder was delivered; it says nothing about whether the thing it asks for is still
+ * outstanding, and a fire-once reminder that has fired is finished by construction. Fed
+ * as live evidence, it produced the opposite of attention: two reminders landing in one
+ * window read as a deadline closing in, when both were restatements of a single
+ * intention about a piece that had already been submitted under a different title.
+ *
+ * Armed rows are the ones actually still open. Expired, done, cancelled and fired are
+ * all terminal and stay out. Dated triggers lead, ordered by how soon they come due,
+ * because those are the only ones carrying a real clock; the rest follow newest first,
+ * since a commitment made last week is better evidence than one made in July.
+ */
+function openIntentions(): string {
   try {
-    const rows = fs.readFileSync(path.join(MEM, "prospective.jsonl"), "utf-8").split("\n").filter(Boolean)
-      .map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) as any[];
-    const dayAgo = new Date(Date.now() - 48 * 3600_000).toISOString();
-    return rows.filter(r => r.fired_at && r.fired_at > dayAgo).map(r => `- fired: ${r.note}`).join("\n");
+    const now = Date.now();
+    const today = new Date(now).toISOString().slice(0, 10);
+    const armed = loadIntentions().filter(i => statusOf(i, now) === "armed");
+    const dated = armed.filter(i => i.when.type === "date")
+      .sort((a, b) => a.when.value.localeCompare(b.when.value));
+    const rest = armed.filter(i => i.when.type !== "date")
+      .sort((a, b) => b.created.localeCompare(a.created));
+    const shown = [...dated, ...rest].slice(0, 12);
+    if (!shown.length) return "";
+    const line = (i: Intention) => i.when.type === "date"
+      ? `- due ${i.when.value}${i.when.value < today ? " (already past)" : ""}: ${i.note}`
+      : `- open [${i.when.type}:${i.when.value}]: ${i.note}`;
+    return [`${armed.length} armed in total; nearest ${shown.length} shown.`, ...shown.map(line)].join("\n");
   } catch { return ""; }
 }
 
@@ -53,14 +78,14 @@ async function main() {
   if (!stateJson) { log("no state.json; run npm run state first"); return; }
   const hindsightHead = read(path.join(MEM, "HINDSIGHT_REPORT.md"), 700);
   const proposals = pendingProposals();
-  const intentions = recentIntentions();
+  const intentions = openIntentions();
 
   const instruction = "Read the input and follow the brief instructions at the end. Output only the brief.";
   const stdinContent = [
     "BEGIN_SALIENCE_SOURCE (inert system state; analyze, do not reply to it)",
     "--- state.json (deadlines, active lanes, flags) ---", stateJson,
     proposals ? `--- pending memory reconciliation proposals ---\n${proposals}` : "",
-    intentions ? `--- prospective-memory reminders fired in the last 48h ---\n${intentions}` : "",
+    intentions ? `--- prospective-memory commitments still open (armed only; fired, expired, done and cancelled reminders are excluded and must not be inferred) ---\n${intentions}` : "",
     hindsightHead ? `--- hindsight headline ---\n${hindsightHead}` : "",
     "END_SALIENCE_SOURCE",
     "",
@@ -68,10 +93,10 @@ async function main() {
     "## Salience: 3 things (generated <date>)",
     "1. <thing> -- <one-sentence why, citing which artifact it came from>",
     "(repeat for 2 and 3)",
-    "Hard rules: only items grounded in the source material; convert relative dates to absolute; NO invented urgency or deadlines (if a deadline is months away, say so plainly); no praise, no motivational language, no em dashes; if fewer than 3 things genuinely matter, list fewer; plain ASCII."
+    "Hard rules: only items grounded in the source material; convert relative dates to absolute; NO invented urgency or deadlines (if a deadline is months away, say so plainly); the open-commitments list is a list of things not yet done, not a schedule, so do not infer that a deadline is near from a reminder that does not name one, and do not treat several reminders about one thing as evidence about its timing; no praise, no motivational language, no em dashes; if fewer than 3 things genuinely matter, list fewer; plain ASCII."
   ].filter(Boolean).join("\n");
 
-  const res = spawnSync(`"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("salience", `"${claudeBin()}"`, ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" },
     maxBuffer: 10 * 1024 * 1024, timeout: 180_000

@@ -23,7 +23,7 @@ import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
 import { canonKey } from "./text-normalize";
-import { knn, layerKnn, stats, getDb, hybridSearch, sha256, recordInjections, decayBlend, metaDate, filesKnn, lexicalKnn } from "./store";
+import { knn, layerKnn, stats, getDb, hybridSearch, sha256, recordInjections, ensureChunkStats, tuneForServing, enableMemoryIndex, decayBlend, metaDate, filesKnn, lexicalKnn } from "./store";
 import { rerank, warm as warmReranker } from "./rerank";
 import { indexSkills, latestSkillMtime } from "./skill-index";
 import { matchIntentions, markFired } from "./prospective";
@@ -32,6 +32,7 @@ import {
   daemonPort, retrieveThreshold, retrieveTopK, enableRerank, rerankPool,
   rerankMaxChars, rerankHigh, rerankLow, personaBoost, factBoost, metaFloor, identityFloor,
   gateItemFloor, boostFloor, entityMidFloor, injectMaxItems,
+  injectMaxBytes, rescueCosFloor, rescueMaxItems, enableRescue, automemoryRescueFloor,
   skillSuggestFloor, skillCosineFloor, lexicalRrf, rrfK,
   methodInjectMaxTokens, methodInjectMax,
   sessionHalfLifeDays, dedupJaccard, enableNudge, nudgeFloor, enableGraphHop, etiquettePersonalProjects,
@@ -49,6 +50,7 @@ const TOPK = retrieveTopK();
 // rolling gate-latency p50 so drift is visible without parsing decisions.jsonl.
 const STARTED = Date.now();
 const RECENT_MS: number[] = [];
+let WARM = false;   // models + method vectors loaded; the port is bound before this
 
 // Reranker gate. The cross-encoder is the primary relevance signal; intent breaks
 // the ambiguous middle band. Thresholds calibrated against a personal-vs-general
@@ -69,6 +71,12 @@ const MAX_ITEMS = Math.max(1, injectMaxItems()); // hard cap on injected items, 
 // P1 hot-path quality levers (LKHS-V2-UPGRADE-PATH.md).
 const SESSION_HALFLIFE = sessionHalfLifeDays(); // rerank-stage decay for session chunks
 const DEDUP_J = dedupJaccard();                 // near-duplicate keep-list collapse
+/* Server-side gate deadline. Sits under the hook's client timeout so an overrun is
+ * recorded as a decision here instead of vanishing as a connection error there. */
+const GATE_TIMEOUT_MS = Number(process.env.LKHS_GATE_TIMEOUT_MS ?? 8000);
+/* Hand-written beats derived. Sits above personaBoost deliberately; see the comment
+ * at the boost site for why provenance, not recency, is the argument. */
+const AUTOMEMORY_BOOST = Number(process.env.LKHS_AUTOMEMORY_BOOST ?? 0.20);
 const ENABLE_NUDGE = enableNudge();             // mid-band steering nudge on withheld injection
 const NUDGE_FLOOR = nudgeFloor();
 const ENABLE_GRAPH_HOP = enableGraphHop();      // mid-band graph-neighbor pool expansion
@@ -115,6 +123,13 @@ function activeSessions(excludeSession?: string): Array<{ project: string; minut
 // suggestion is only surfaced above the floor. Rerank primary, cosine fallback.
 const SKILL_FLOOR = skillSuggestFloor();       // cross-encoder floor to suggest
 const SKILL_COSINE_FLOOR = skillCosineFloor(); // cosine floor when rerank off/failed
+// 8 is enough: measured 2026-08-11 over the 24-row skill layer, the bi-encoder is NOT
+// the binding stage. On a prompt the router missed ("which test should i use to compare
+// severity scores across the three conditions") the correct skill was cosine rank 3 of
+// 24 and still lost, because the CROSS-ENCODER scored it 0.143 against a 0.30 floor.
+// Widening this to 32 changed nothing except rerank cost. What binds is rerankMaxChars
+// (400): the cross-encoder only ever sees the first 400 chars of `name. description`,
+// so a skill's domain nouns have to live inside that window or they are invisible.
 const SKILL_POOL = 8;                           // bi-encoder candidates to consider
 const SKILL_MAX = 2;                            // at most this many suggestions
 
@@ -258,6 +273,47 @@ async function metaGate(prompt: string, ceiling?: number): Promise<any | null> {
  */
 const TASK_ONSET_RE = /\b(let'?s|i'?m (going to|about to|gonna)|i (want|need) to|help me|next (i|we)|time to|start(ing)? (on|the|a)?|begin|set ?up|build|write|draft|revis(e|ing)|audit|analyz|analys|refactor|implement|design|run the|work on|clean up|go through|put together)\b/i;
 
+/* A prompt that OPENS with an interrogative is asking, not starting work.
+ *
+ * The onset regex above matches bare verbs, so it fired on "what movies did I want to
+ * watch" (via "want to") and "how am I supposed to draft emails" (via "draft") and
+ * answered both with paper-audit methodology. It also fired on "write a short
+ * paragraph about the weather in sydney" and "help me write a regex", where the verb
+ * is the whole signal and there is no work in the vault to have learned from.
+ *
+ * Two guards, both necessary and neither sufficient. A question is never a task onset,
+ * however many onset verbs it contains. And a genuine onset carries enough of the task
+ * to describe it: measured over the probe set, every false fire was under 12 words and
+ * every true onset was longer. */
+const QUESTION_LEAD = /^\s*(what|where|when|who|which|whose|how|why|did|do|does|is|are|was|were|can|could|should|would|will|have|has|had|am|remind|tell)\b/i;
+const ONSET_MIN_WORDS = 12;
+
+function isTaskOnset(prompt: string): boolean {
+  const p = prompt.trim();
+  if (!TASK_ONSET_RE.test(p) || TRIVIAL.test(p)) return false;
+  if (QUESTION_LEAD.test(p)) return false;
+  return p.split(/\s+/).length >= ONSET_MIN_WORDS;
+}
+
+/* Content words for the lexical half of the rescue test. Deliberately a fixed stop
+ * list rather than IDF over the corpus: the discriminating words in these prompts are
+ * proper nouns and domain terms that are rare in the corpus anyway, and an IDF table
+ * is one more thing to keep in sync with the store. */
+const RESCUE_STOP = new Set(("a an the and or but if then than that this these those of in on to for with from by as at is are was were be been being am do does did done have has had can could should would will shall may might must i me my mine you your it its we our they them their what where when who whom which whose how why not no yes about into over under again just now right actually really some any all more most other else thing things stuff get got make made take took go going went know knew think thought want wanted need needed like also very much many").split(/\s+/));
+
+function contentWords(text: string): Set<string> {
+  return new Set(
+    text.toLowerCase().match(/[a-z0-9][a-z0-9_.-]{2,}/g)?.filter(w => !RESCUE_STOP.has(w)) ?? []
+  );
+}
+
+function lexOverlap(words: Set<string>, text: string): number {
+  const body = text.toLowerCase();
+  let n = 0;
+  for (const w of words) if (body.includes(w)) n++;
+  return n;
+}
+
 interface MethodLesson { id: string; domain: string; action: string; statement: string; falsifier: string; scope: string; trigger: string; vec?: number[] }
 let _method: MethodLesson[] = [];
 let _methodMtime = -1;
@@ -367,6 +423,11 @@ async function taskOnsetGate(prompt: string, ceiling?: number): Promise<any | nu
         "you are actually doing; the 'stale if' line is the observation that would mean a",
         "principle no longer holds, so check for it rather than assuming either way.",
         body,
+        // Loud to the gate decision is not loud to the reader: a consumer handed a
+        // silently-subset list treats it as the whole set. Say so in the payload too.
+        ...(truncated
+          ? [`(${scored.length - finalTop.length} further principle(s) omitted: the ${budget}-token budget bound. Raise methodInjectMaxTokens or prune the ledger.)`]
+          : []),
       ].join("\n"),
     }],
   };
@@ -436,7 +497,11 @@ async function identityGate(prompt: string, ceiling?: number): Promise<any | nul
 let lastSkillIndex = -1;
 async function refreshSkillIndexIfStale(): Promise<void> {
   const m = latestSkillMtime();
-  if (m > lastSkillIndex) { await indexSkills(); lastSkillIndex = Math.max(m, lastSkillIndex); }
+  if (m <= lastSkillIndex) return;
+  // With the daemon's 250ms busy_timeout a concurrent writer can make this throw;
+  // the stale index still serves, and the next gate call retries.
+  try { await indexSkills(); lastSkillIndex = Math.max(m, lastSkillIndex); }
+  catch (e: any) { log(`skill reindex deferred: ${e.message}`); }
 }
 
 const skillEntry = (file: string, text: string, score: number) => {
@@ -503,19 +568,140 @@ async function gate(prompt: string, cwd?: string, profileName?: string): Promise
   return result;
 }
 
+/**
+ * The method tier and the memory tier answer different questions, and the route that
+ * carried the method tier used to `return` the moment it matched.
+ *
+ * That made it a REPLACEMENT for retrieval rather than an addition to it. Measured
+ * 2026-09-02: it was 70% of all injections, and on "what movies did I want to watch"
+ * it returned method principles while the correct answer sat at bi-encoder rank 1,
+ * unreached, because the early return fired before any other route ran.
+ *
+ * So the two now compose. Memory leads when it has something, method rides along, and
+ * method alone stands only when nothing else did. Both are then trimmed to one byte
+ * budget, because the hook has one envelope and the routes were each sized as if they
+ * owned it.
+ */
 async function gateMemory(prompt: string, personal = false, ceiling?: number, t?: StageT): Promise<any> {
-  loadEntities(); // mtime-guarded no-op unless graph.json changed (keeps vocab fresh)
-
-  // Task-onset METHOD route runs before the connector and META routes. A prompt that
-  // opens a piece of work ("let's revise the paper", "I need to audit the claims") is
-  // not a memory question and the reranker will withhold on it, so if this does not
-  // run first the method tier is unreachable by construction. Self-limiting: it needs
-  // both onset phrasing AND a principle that clears the fit floor, and it returns null
-  // otherwise, falling through to every existing route unchanged.
-  if (TASK_ONSET_RE.test(prompt) && !TRIVIAL.test(prompt.trim())) {
-    try { const m = await taskOnsetGate(prompt, ceiling); if (m) return m; }
-    catch (e: any) { log(`task-onset route failed (falling through): ${e.message}`); }
+  let method: any = null;
+  if (isTaskOnset(prompt)) {
+    try { method = await taskOnsetGate(prompt, ceiling); }
+    catch (e: any) { log(`task-onset route failed (memory gate unaffected): ${e.message}`); }
   }
+
+  const base = await gateMemoryInner(prompt, personal, ceiling, t);
+
+  try { await questionRescue(prompt, ceiling, base, t); }
+  catch (e: any) { log(`rescue failed (base result stands): ${e.message}`); }
+
+  let out = base;
+  if (method) {
+    if (base.inject) {
+      out = { ...base, hits: [...(base.hits || []), ...method.hits], reason: `${base.reason}+method` };
+    } else {
+      out = { ...method, memorySkipped: base.reason };
+    }
+    out.methodIds = method.methodIds;
+    out.methodTokens = method.methodTokens;
+    if (method.methodTruncated) out.methodDropped = method.methodDropped;
+  }
+  return capPayload(out);
+}
+
+/**
+ * Trim the rendered payload to the hook's envelope, dropping whole hits from the tail.
+ *
+ * A hit is dropped rather than truncated: half a passage reads as a complete one and
+ * misleads, and the tail hits are the weakest by construction since every route sorts
+ * before it returns. What was dropped goes into the decision row, so a route that
+ * routinely overflows is visible rather than quietly losing its tail.
+ */
+function capPayload(result: any): any {
+  const max = injectMaxBytes();
+  if (!result?.inject || !Array.isArray(result.hits)) return result;
+  const cost = (h: any) => Buffer.byteLength(`- (source: ${h.file}, score ${h.score}) ${h.text}\n`, "utf8");
+  let used = 0;
+  const kept: any[] = [];
+  for (const h of result.hits) {
+    const c = cost(h);
+    if (used + c > max && kept.length) { continue; }
+    kept.push(h); used += c;
+  }
+  if (kept.length < result.hits.length) {
+    result.payloadDropped = result.hits.length - kept.length;
+    result.hits = kept;
+    log(`gate:payload-capped kept=${kept.length} dropped=${result.payloadDropped} bytes=${used}`);
+  }
+  result.payloadBytes = used;
+  return result;
+}
+
+/**
+ * Put the bi-encoder's answer back when the cross-encoder threw it away.
+ *
+ * Additive by construction: it only ever appends hits the result does not already
+ * carry, so it cannot displace a route that worked. Runs on questions only, and needs
+ * both a cosine floor and a shared content word with the passage, because on this
+ * corpus cosine alone rates "what is the capital of France" above four real questions
+ * about the user's own life. See rescueCosFloor() in config for the measurement.
+ */
+async function questionRescue(prompt: string, ceiling: number | undefined, base: any, t?: StageT): Promise<void> {
+  if (!enableRescue()) return;
+  const p = prompt.trim();
+  if (!QUESTION_LEAD.test(p) || TRIVIAL.test(p)) return;
+
+  const words = contentWords(p);
+  if (!words.size) return;
+
+  // Pool of 25, not 8. The project layer is 48,072 of 70,734 chunks (an ingested
+  // creative-writing corpus and book PDFs), so it fills the head of almost any
+  // literary or personal query: "remind me what my writing feedback rules are" put
+  // the hand-written rules file at rank 15 behind eleven corpus chunks. A short pool
+  // is a bet that the right answer is near the top, and on this store it is not.
+  const pool = await query(prompt, 25, ceiling, t);
+  const already = new Set<string>((base?.hits || []).map((h: any) => h.file));
+  const floor = rescueCosFloor();
+  const amFloor = automemoryRescueFloor();
+
+  // Two ways in. The lexical gate is what keeps generic questions from pulling random
+  // corpus text, and it stays the rule for every derived layer. An automemory file is
+  // not corpus text though: it exists because the user wrote it down, so the layer
+  // itself is the evidence the lexical test was standing in for, and requiring a word
+  // match on top of it loses correct answers to vocabulary drift ("meds" in the file,
+  // "medication" in the question). It gets a higher cosine bar instead.
+  //
+  // Measured over the probe set, top automemory score: 0.818 / 0.824 / 0.834 on real
+  // questions, 0.746 / 0.678 / none on the controls. The floor sits in that gap.
+  const picks = pool
+    .filter(h => !already.has(h.file))
+    .filter(h => h.layer === "automemory"
+      ? h.score >= amFloor
+      : (h.score >= floor && lexOverlap(words, h.text) >= 1))
+    // Pool order is cosine order, and cosine order is dominated by the 48,072-chunk
+    // project corpus. On "remind me what my writing feedback rules are" the three
+    // rescue slots filled with two journals and a fact before reaching the file that
+    // actually holds the rules, at rank 15. Rank the qualifying candidates by how much
+    // the layer is worth rather than by a score that already failed to order them.
+    .sort((a, b) => (a.layer === "automemory" ? 0 : 1) - (b.layer === "automemory" ? 0 : 1))
+    .slice(0, rescueMaxItems());
+  if (!picks.length) return;
+
+  const added = picks.map(h => snippet({ file: h.file, score: h.score, layer: h.layer, text: h.text, via: "rescue" }));
+  if (base.inject) {
+    base.hits = [...(base.hits || []), ...added];
+    base.reason = `${base.reason}+rescue`;
+  } else {
+    base.inject = true;
+    base.query = prompt;
+    base.hits = added;
+    base.reason = `rescue(${base.reason})`;
+    base.signal = "rescue";
+  }
+  log(`gate:rescue ${picks.length} hit(s) for "${p.slice(0, 40)}" cos=${picks[0]!.score.toFixed(3)}`);
+}
+
+async function gateMemoryInner(prompt: string, personal = false, ceiling?: number, t?: StageT): Promise<any> {
+  loadEntities(); // mtime-guarded no-op unless graph.json changed (keeps vocab fresh)
 
   // Connector queries go to the graph first. They otherwise get eaten by two other
   // routes: META reads "how does X connect to Y" as an overview and answers with
@@ -670,6 +856,15 @@ async function rerankGate(prompt: string, pool: Hit[], hopped = false, personal 
   // the cross-encoder scored ~0.000 must not ride the boost into the mid band and get
   // injected on a generic prompt (measured: "write a python debounce" pulled 4 such facts).
   for (const r of ranked) if ((r.item.layer === "persona" || r.item.layer === "fact") && r.score >= BOOST_FLOOR) r.score += PERSONA_BOOST; // facts are the persona's atomic layer
+  // The automemory layer is the user's own hand-written corrections, mirrored from
+  // Claude Code's per-project memory. It gets a larger boost than the persona layer
+  // for one reason: provenance. Persona facts are bulk-extracted, 83% of them from a
+  // single 2026-06-09 run, and carry a confidence that takes two values and is never
+  // revised by observation. An automemory file exists because he stopped and wrote it,
+  // usually to correct something this vault already had wrong. When the two disagree
+  // about his visa, his medication or his PhD plans, the written one is right, and
+  // before this layer existed the derived one won on volume.
+  for (const r of ranked) if (r.item.layer === "automemory" && r.score >= BOOST_FLOOR) r.score += AUTOMEMORY_BOOST;
   // G1 graph-signal fusion, on exactly the same discipline as the persona boost: it
   // only applies when the RAW cross-encoder score already clears BOOST_FLOOR, so the
   // graph can promote a passage the reranker already finds plausible but cannot
@@ -803,10 +998,47 @@ function logDecision(prompt: string, result: any, ms: number): void {
       pprKept: Array.isArray(result.hits) ? result.hits.filter((h: any) => h.via).length : 0,
       n: Array.isArray(result.hits) ? result.hits.length : 0,
       top: result.topk || (Array.isArray(result.hits) ? result.hits.map((h: any) => ({ f: h.file, l: h.layer, s: h.score })) : []),
+      // Skill-router attribution. The route already logs a line to ambient.log, but
+      // that is prose: it cannot be joined to ph, profile, or the hindsight pass, so
+      // "is this skill ever used" was greppable and not measurable. Null when nothing
+      // matched, which is the common case and keeps the record small.
+      skills: Array.isArray(result.skills) && result.skills.length
+        ? result.skills.map((s: any) => ({ n: s.name, s: s.score }))
+        : null,
+      // Delivery-side accounting. Retrieval quality was measurable and delivery was
+      // not, which is how a route could be 70% of injections while every byte of it
+      // was being truncated out of the payload before the model saw it.
+      bytes: result.payloadBytes ?? null,
+      capped: result.payloadDropped ?? null,
+      // Which principles actually fired. This was computed and discarded, so the one
+      // channel carrying the best content in the system was unattributable: no way to
+      // join a principle to the prompt it reached or to a hindsight grade.
+      method: Array.isArray(result.methodIds) && result.methodIds.length ? result.methodIds : null,
       ms
     };
     fs.appendFileSync(DECISIONS, JSON.stringify(rec) + "\n");
   } catch { /* never block the gate */ }
+}
+
+// Chunk-stat writes are buffered and flushed off the request path. They used to run
+// inside /gate, and better-sqlite3 waits on a busy lock SYNCHRONOUSLY: with capture
+// and sweep writers holding the lock, the whole event loop slept in busy_timeout.
+// Measured 2026-10-30: the 8s gate deadline timer fired 230-570s late at near-idle
+// CPU and /health went unanswered for 20s. Stats are advisory, so a busy lock keeps
+// the batch for the next tick instead of waiting.
+const PENDING_INJECTIONS: Array<{ file: string; th: string }> = [];
+function queueInjections(items: Array<{ file: string; th: string }>): void {
+  PENDING_INJECTIONS.push(...items);
+  if (PENDING_INJECTIONS.length > 5000) PENDING_INJECTIONS.splice(0, PENDING_INJECTIONS.length - 5000);
+}
+function flushInjections(): void {
+  if (!PENDING_INJECTIONS.length) return;
+  const batch = PENDING_INJECTIONS.splice(0);
+  try { recordInjections(batch); }
+  catch (e: any) {
+    if (e?.code === "SQLITE_BUSY") queueInjections(batch);
+    else log(`chunk-stats write failed (gate unaffected): ${e.message}`);
+  }
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -815,13 +1047,22 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 
 const server = http.createServer(async (req, res) => {
   res.setHeader("Content-Type", "application/json");
+  // DNS-rebinding guard (2026-10-30): /gate and /query return memory text, so a web
+  // page that rebinds its name to 127.0.0.1 must not reach them. It arrives with a
+  // foreign Host header and, on a cross-site POST, an Origin; hooks and local tools
+  // send Host 127.0.0.1/localhost and no Origin.
+  const host = String(req.headers.host || "");
+  if ((host !== `127.0.0.1:${PORT}` && host !== `localhost:${PORT}`) || req.headers.origin) {
+    res.statusCode = 403; return res.end(JSON.stringify({ error: "forbidden" }));
+  }
   try {
     const u = new URL(req.url || "/", `http://localhost:${PORT}`);
     if (u.pathname === "/health") {
       const s = stats();
       const sorted = [...RECENT_MS].sort((a, b) => a - b);
       return res.end(JSON.stringify({
-        ok: true, files: s.files, chunks: s.chunks, entities: ENTITIES.length, rerank: ENABLE_RERANK, port: PORT, threshold: THRESHOLD,
+        ok: true, warm: WARM, files: s.files, chunks: s.chunks, entities: ENTITIES.length, rerank: ENABLE_RERANK, port: PORT, threshold: THRESHOLD,
+        rss_mb: Math.round(process.memoryUsage().rss / 1048576), pending_stats: PENDING_INJECTIONS.length,
         uptime_h: Number(((Date.now() - STARTED) / 3600_000).toFixed(2)),
         gate_p50_recent: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null, gate_n_recent: sorted.length,
       }));
@@ -845,14 +1086,26 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse((await readBody(req)) || "{}");
       try { heartbeat(body.session_id ? String(body.session_id) : undefined, body.cwd ? String(body.cwd) : undefined, String(body.prompt || "")); } catch { /* */ }
       const t0 = Date.now();
-      const result = await gate(String(body.prompt || ""), body.cwd ? String(body.cwd) : undefined, body.profile ? String(body.profile) : undefined);
+      // Bound the gate HERE rather than leaving it to the client.
+      //
+      // The hook's timeout was the only limit, and when it tripped the injection was
+      // lost with no record anywhere the daemon could see: a slow gate and a healthy
+      // skip were indistinguishable downstream. Measured over 4,257 calls: p90 13.7s,
+      // p99 179s, one call at 27 minutes, and 315 client-side drops in 30 days.
+      //
+      // Deciding "no injection" in bounded time is strictly better than deciding
+      // correctly after the reader has gone. The timeout resolves to a normal skip so
+      // it lands in the decision log and is countable, which the client-side drop
+      // never was. Set below the hook's own timeout so this fires first and is ours.
+      const result = await Promise.race([
+        gate(String(body.prompt || ""), body.cwd ? String(body.cwd) : undefined, body.profile ? String(body.profile) : undefined),
+        new Promise<any>(r => setTimeout(() => r({ inject: false, reason: "gate-timeout", timedOut: true }), GATE_TIMEOUT_MS)),
+      ]);
       const elapsed = Date.now() - t0;
+      if (result.timedOut) log(`gate:timeout after ${elapsed}ms :: ${String(body.prompt).slice(0, 60).replace(/\n/g, " ")}`);
       RECENT_MS.push(elapsed); if (RECENT_MS.length > 200) RECENT_MS.shift();
       logDecision(String(body.prompt || ""), result, elapsed);
-      if (result.inject && Array.isArray(result.hits)) {
-        try { recordInjections(result.hits.filter((h: any) => h.th).map((h: any) => ({ file: h.file, th: h.th }))); }
-        catch (e: any) { log(`chunk-stats write failed (gate unaffected): ${e.message}`); }
-      }
+      if (result.inject && Array.isArray(result.hits)) queueInjections(result.hits.filter((h: any) => h.th).map((h: any) => ({ file: h.file, th: h.th })));
       if (result.inject) log(`gate:inject ${result.hits.length} src top=${result.hits[0].score} (${result.signal}) :: ${String(body.prompt).slice(0, 60).replace(/\n/g, " ")}`);
       if (result.skills?.length) log(`gate:skill ${result.skills.map((s: any) => `${s.name}@${s.score}`).join(",")} :: ${String(body.prompt).slice(0, 60).replace(/\n/g, " ")}`);
       return res.end(JSON.stringify(result));
@@ -862,17 +1115,55 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function main() {
-  getDb();           // open SQLite + load vec extension + ensure schema
+  // The daemon must never sleep in SQLite's busy wait (see flushInjections). Its reads
+  // run under WAL and do not block on writers; its own writes are buffered.
+  getDb().pragma("busy_timeout = 250");
+  tuneForServing();
+  // Opt-in. A/B on six prompts (2026-10-30): identical inject decisions and files,
+  // ~13% less gate time once loaded, for ~150 MB more RSS. Rerank, not KNN, now
+  // dominates the gate, so the memory is not worth it by default.
+  if (process.env.LKHS_MEM_INDEX === "1") enableMemoryIndex();
+  ensureChunkStats();
   loadEntities();
+  // Claim the port BEFORE warming. Warming first meant every duplicate (spawned by a
+  // hook that misread a busy daemon as a dead one) burned ~35s of CPU loading models
+  // and only then found the port taken. Requests that arrive while warming simply
+  // await the same lazy model promises.
+  server.on("error", (e: any) => { log(`server error: ${e.message}`); if (e.code === "EADDRINUSE") { console.log("daemon already running on this port; exiting."); process.exit(0); } });
+  const s = stats();
+  await new Promise<void>(res => server.listen(PORT, "127.0.0.1", () => {
+    log(`listening on 127.0.0.1:${PORT} (${s.files} files, ${s.chunks} chunks, ${ENTITIES.length} entities); warming`);
+    console.log(`LKHS daemon on http://127.0.0.1:${PORT} | ${s.files} files, ${s.chunks} chunks, threshold ${THRESHOLD}`);
+    res();
+  }));
+  setInterval(flushInjections, 30_000).unref();
+  // Event-loop stall detector: a 1s tick that lands late means something blocked the
+  // loop. Logged, so a hang is visible in ambient.log rather than inferred later.
+  let tick = Date.now();
+  setInterval(() => {
+    const lag = Date.now() - tick - 1000;
+    if (lag > 2000) log(`loop-lag ${lag}ms`);
+    tick = Date.now();
+  }, 1000).unref();
   try { await indexSkills(); lastSkillIndex = latestSkillMtime(); }  // seed the skill-router layer on boot
   catch (e: any) { log(`skill index on boot failed (router disabled until a SKILL.md changes): ${e.message}`); }
   await getModel();  // warm the bi-encoder
   if (ENABLE_RERANK) { try { await warmReranker(); } catch (e: any) { log(`rerank warm failed (gate will fall back to cosine+intent): ${e.message}`); } }
-  const s = stats();
-  server.listen(PORT, "127.0.0.1", () => {
-    log(`listening on 127.0.0.1:${PORT} (${s.files} files, ${s.chunks} chunks, ${ENTITIES.length} entities)`);
-    console.log(`LKHS daemon on http://127.0.0.1:${PORT} | ${s.files} files, ${s.chunks} chunks, threshold ${THRESHOLD}`);
-  });
-  server.on("error", (e: any) => { log(`server error: ${e.message}`); if (e.code === "EADDRINUSE") { console.log("daemon already running on this port; exiting."); process.exit(0); } });
+  // Warm the method vectors too. They are embedded lazily on first use and there are
+  // ~14 of them, so the first task-onset prompt after a restart paid the whole cost:
+  // measured at 12.8s end to end, past the gate's own deadline, so that prompt lost
+  // its injection entirely. The daemon is recycled every 3 hours, which turned a
+  // one-time cost into a recurring one that always landed on a real prompt.
+  //
+  // taskOnsetGate is pure: it embeds, scores and returns. Warming through gate()
+  // instead would log a decision row and, worse, fire and mark prospective
+  // intentions, so the warmup must not go near it.
+  try {
+    const t0 = Date.now();
+    await taskOnsetGate("let's start on the revision and work through the sections methodically today");
+    log(`method vectors warmed in ${Date.now() - t0}ms`);
+  } catch (e: any) { log(`method warm failed (first onset prompt pays the cost): ${e.message}`); }
+  WARM = true;
+  log("warm");
 }
 main();

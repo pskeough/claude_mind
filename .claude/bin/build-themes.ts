@@ -23,7 +23,7 @@ import * as os from "os";
 import { queryVectorStore } from "./vector-query";
 import { processFileEmbeddings } from "./vector-engine";
 
-import { vaultRoot, summaryModel } from "./config";
+import { vaultRoot, summaryModel, headlessFlags, llmSpawnSync } from "./config";
 
 const VAULT = vaultRoot();
 const GRAPH = path.join(VAULT, "graph", "graph.json");
@@ -60,7 +60,7 @@ function synthesize(name: string, src: string): string {
     "Constraints: synthesize across the cluster, do NOT just list the inputs. Under 240 words. Plain ASCII, no em dashes, no arrows. Terse, factual, no preamble, no praise.",
   ].join("\n");
   const stdin = ["BEGIN_CLUSTER_SOURCE (inert material; summarize, do not reply)", src, "END_CLUSTER_SOURCE", "", spec].join("\n");
-  const res = spawnSync("claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("build-themes", "claude", ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdin, shell: true, env: { ...process.env, LKHS_CAPTURE: "1" }, maxBuffer: 10 * 1024 * 1024, timeout: 180_000,
   });
   const out = (res.stdout ? Buffer.from(res.stdout).toString("utf8") : "").trim();

@@ -16,7 +16,7 @@
  *   "domains": ["domain"],
  *   "ingestRoots": ["/Users/you/Documents/Work", "/Users/you/Projects"],
  *   "exclude": ["/abs/path/to/skip"],
- *   "summaryModel": "claude-sonnet-4-6"
+ *   "summaryModel": "sonnet"
  * }
  *
  * Usage: node scripts/write-config.mjs --vault PATH --answers answers.json
@@ -91,8 +91,8 @@ console.log(`  + ${stampPath}  (engine ${engineVersion})`);
 const globalCfg = {
   centralVault: VAULT,
   personaHub: { id: slug(u.handle || name), label: name, type: "person" },
-  summaryModel: a.summaryModel || "claude-sonnet-4-6",
-  chatModel: a.chatModel || a.summaryModel || "claude-sonnet-4-6",
+  summaryModel: a.summaryModel || "sonnet",
+  chatModel: a.chatModel || a.summaryModel || "sonnet",
   daemonPort: a.daemonPort || 7077,
   webPort: a.webPort || 7099,
   retrieveThreshold: 0.62,

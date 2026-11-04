@@ -26,7 +26,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { spawnSync } from "child_process";
-import { vaultRoot, memDir, summaryModel, SCOPE_ORDER, scopeRank, claudeBin } from "./config";
+import { vaultRoot, memDir, summaryModel, SCOPE_ORDER, scopeRank, claudeBin, headlessFlags, llmSpawnSync } from "./config";
 import { loadFactsFile, facetDefaultScope, Fact } from "./persona-facts";
 
 const VAULT = vaultRoot();
@@ -84,7 +84,7 @@ function judge(label: string, facts: Fact[]): Proposal[] {
     "Output a JSON array (possibly empty): [{\"key\": \"<fact key>\", \"scope\": \"<tighter scope>\", \"reason\": \"<short>\"}] and nothing else.",
   ].join("\n");
 
-  const res = spawnSync(claudeBin(), ["-p", instruction, "--model", summaryModel(), "--output-format", "text"], {
+  const res = llmSpawnSync("persona-scope", claudeBin(), ["-p", instruction, "--model", summaryModel(), "--output-format", "text", ...headlessFlags()], {
     cwd: VAULT, input: stdinContent, shell: true,
     env: { ...process.env, LKHS_CAPTURE: "1" }, maxBuffer: 10 * 1024 * 1024, timeout: 300_000,
   });

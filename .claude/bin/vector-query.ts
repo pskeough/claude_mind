@@ -23,7 +23,20 @@ async function getModel() {
   return _model;
 }
 
-export async function queryVectorStore(query: string, topK = 5): Promise<QueryHit[]> {
+/**
+ * @param opts.onlyLayers restrict the pool to these layers. Without it, a small layer
+ *   (persona is 448 chunks against ~68k) almost never survives a global top-K cut, so
+ *   a caller that filters by layer AFTER the query gets an empty result no matter how
+ *   well the layer matches. Implemented as an exclude-list over the other layers so it
+ *   rides the existing hybridSearch option rather than adding a second code path.
+ * @param opts.factK how many embedded facts may enter the pool. Defaults to topK,
+ *   which is right for general recall but starves a prose-only query: facts carry
+ *   factBoost, so topK facts outrank every chunk and fill the result. Pass 0 to ask
+ *   for prose alone.
+ */
+export async function queryVectorStore(
+  query: string, topK = 5, opts: { onlyLayers?: string[]; factK?: number } = {},
+): Promise<QueryHit[]> {
   const model = await getModel();
   const queryText = `query: ${query.replace(/\s+/g, " ").trim()}`;
   let queryVec: number[] = [];
@@ -35,7 +48,12 @@ export async function queryVectorStore(query: string, topK = 5): Promise<QueryHi
   // P4a hybrid pool (store.hybridSearch): dense knn prose + factKnn facts as before
   // (skill layer excluded; quarantine + validity enforced at the vector layer; facts
   // carry the structural boost), with FTS5 lexical lists RRF-fused in when enabled.
-  return hybridSearch(queryVec, query, topK, { factK: topK, exclude: ["skill"], factBoost: factBoost(), lexical: lexicalRrf(), rrfK: rrfK() })
+  const ALL_LAYERS = ["project", "session", "theme", "card", "other", "persona",
+    "wiki", "memory", "lesson", "persona-clinical", "raw", "skill"];
+  const exclude = opts.onlyLayers?.length
+    ? ALL_LAYERS.filter(l => !opts.onlyLayers!.includes(l))
+    : ["skill"];
+  return hybridSearch(queryVec, query, topK, { factK: opts.factK ?? topK, exclude, factBoost: factBoost(), lexical: lexicalRrf(), rrfK: rrfK() })
     .map(h => ({ filePath: h.file, text: h.text, score: h.score, layer: h.layer, factKey: h.factKey }));
 }
 

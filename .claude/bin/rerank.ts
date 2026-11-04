@@ -33,10 +33,17 @@ async function lib(): Promise<any> {
 let _tok: Promise<any> | null = null;
 let _model: Promise<any> | null = null;
 async function tokenizer(): Promise<any> { return (_tok ??= lib().then(t => t.AutoTokenizer.from_pretrained(MODEL_ID))); }
+// onnxruntime's CPU arena keeps the largest activation buffer it has ever needed. A long
+// prompt paired with 32 passages at up to 512 tokens is a large attention tensor, so
+// the daemon grew 545 MB -> 1.85 GB in five live gates (2026-10-30) and kept it.
+// Without the arena, buffers are freed after each run. A/B over ten prompts: identical
+// scores and decisions, peak RSS 2,271 -> 650 MB, no slower.
+// LKHS_RERANK_ARENA=1 restores it.
+const SESSION_OPTIONS = process.env.LKHS_RERANK_ARENA === "1" ? undefined : { enableCpuMemArena: false };
 async function model(): Promise<any> {
   return (_model ??= lib().then(t =>
-    t.AutoModelForSequenceClassification.from_pretrained(MODEL_ID, { dtype: "q8" })
-      .catch(() => t.AutoModelForSequenceClassification.from_pretrained(MODEL_ID)) // fall back to default dtype
+    t.AutoModelForSequenceClassification.from_pretrained(MODEL_ID, { dtype: "q8", session_options: SESSION_OPTIONS })
+      .catch(() => t.AutoModelForSequenceClassification.from_pretrained(MODEL_ID, { session_options: SESSION_OPTIONS })) // fall back to default dtype
   ));
 }
 
@@ -58,7 +65,10 @@ export async function rerank<T>(
   query: string,
   candidates: T[],
   getText: (c: T) => string,
-  batchSize = 32
+  // Keep 32: the q8 model quantizes activations per tensor, so the batch nudges scores
+  // (batch 8 moved them up to 0.03). Batch 32 without the arena reproduced the old
+  // scores exactly with a 650 MB peak instead of 2.27 GB (A/B, 2026-10-30).
+  batchSize = Number(process.env.LKHS_RERANK_BATCH ?? 32)
 ): Promise<Reranked<T>[]> {
   if (candidates.length === 0) return [];
   const tok = await tokenizer();

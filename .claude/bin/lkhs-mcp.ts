@@ -12,19 +12,24 @@
  * SQLite store, cards, journals and graph all resolve. stdout is the MCP protocol,
  * so all logging goes to a file.
  *
- * Register (user scope, available everywhere):
+ * Register (user scope, available everywhere) as the shared HTTP server, which the
+ * LKHS watchdog keeps running (`lkhs-mcp.ts --http`, port mcpHttpPort(), 7079):
+ *   claude mcp add --transport http --scope user lkhs-memory http://127.0.0.1:7079/mcp
+ * Stdio still works (one process per session; lkhs-bridge uses it):
  *   claude mcp add --scope user lkhs-memory -- node --import tsx <abs>/lkhs-mcp.ts
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import * as fs from "fs";
+import * as http from "http";
 import * as path from "path";
 import * as os from "os";
-import { vaultRoot, personaHalfLifeDays } from "./config";
+import { vaultRoot, personaHalfLifeDays, mcpHttpPort } from "./config";
 import { withTemporalDefaults } from "./persona-facts";
 import { redact, toAscii } from "./capture-session";
-import { loadIntentions, addIntention } from "./prospective";
+import { loadIntentions, addIntention, statusOf, closeIntentions, auditCounts } from "./prospective";
 
 // Resolve the vault (env > config.centralVault > derived) and chdir so cwd matches
 // the vault; the engine resolves paths via config regardless, this just keeps them aligned.
@@ -64,7 +69,31 @@ export function recallPersonaFacts(opts: {
   let facts: PersonaFact[] = loadFacts("persona_facts.jsonl");
   if (wantClinical) facts = facts.concat(loadFacts("persona_clinical.jsonl"));
   if (opts.facet) facts = facts.filter((f: any) => f.facet === opts.facet);
-  if (opts.query) { const q = opts.query.toLowerCase(); facts = facts.filter((f: any) => (f.statement + " " + (f.sources || []).join(" ")).toLowerCase().includes(q)); }
+  // Token-overlap match, not whole-string `includes`. The old form required the
+  // ENTIRE query to appear verbatim in a statement, so every natural-language recall
+  // ("how I think", "what he dislikes in responses") returned zero facts even when
+  // the facet held hundreds of them. Rank by how many content tokens hit, keep any
+  // fact matching at least one, and fall back to the unfiltered facet when nothing
+  // matches so a browse still returns the facet rather than an empty result.
+  if (opts.query) {
+    const STOP = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "on", "for",
+      "with", "what", "how", "his", "her", "their", "does", "do", "is", "are", "about",
+      "he", "she", "they", "i", "me", "my", "you", "it", "that", "this", "when", "who"]);
+    const toks = opts.query.toLowerCase().match(/[a-z][a-z'-]{2,}/g) || [];
+    const terms = [...new Set(toks.filter(t => !STOP.has(t)))];
+    if (terms.length) {
+      const scored = facts.map((f: any) => {
+        const hay = (f.statement + " " + (f.sources || []).join(" ")).toLowerCase();
+        return { f, hits: terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0) };
+      }).filter(x => x.hits > 0);
+      // Only narrow when the query actually selected something; an empty result from a
+      // facet browse is worse than the whole facet.
+      if (scored.length) {
+        scored.sort((a, b) => b.hits - a.hits);
+        facts = scored.map(x => x.f);
+      }
+    }
+  }
 
   // validity filter: drop facts invalid at the reference date unless the caller
   // opts back in. Missing invalid_at (all pre-temporal facts) means "valid".
@@ -213,12 +242,22 @@ export function sliceTurns(turns: string[], query: string | undefined, maxChars:
 
 async function main() {
   // Dynamic import after chdir so vault-relative paths resolve.
-  const { knn, layerStats, stats } = await import("./store");
+  const { knn, layerStats, stats, tuneForServing } = await import("./store");
+  if (process.argv.includes("--http")) tuneForServing();   // long-lived shared server
   const { queryVectorStore } = await import("./vector-query");
   const { rerank } = await import("./rerank");
   const { canonKey } = await import("./text-normalize");
 
-  const server = new McpServer({ name: "lkhs-memory", version: "1.0.0" });
+  // Tools are recorded once and replayed into a fresh McpServer per connection. Stdio
+  // needs exactly one; the shared HTTP mode (--http) is stateless and builds one per
+  // request, because an McpServer binds a single transport.
+  const toolDefs: any[][] = [];
+  const server = { tool: (...args: any[]) => { toolDefs.push(args); } };
+  const makeServer = () => {
+    const s = new McpServer({ name: "lkhs-memory", version: "1.0.0" });
+    for (const args of toolDefs) (s.tool as any)(...args);
+    return s;
+  };
 
   // Graph helpers (shared by related + explore).
   const loadGraph = () => { try { return JSON.parse(fs.readFileSync(path.join(VAULT, "graph", "graph.json"), "utf-8")); } catch { return null; } };
@@ -379,17 +418,52 @@ async function main() {
 
   server.tool(
     "list_intentions",
-    "List prospective-memory intentions: pending (waiting for their trigger) and recently fired. Use to review or check what reminders are set.",
-    { include_fired: z.boolean().optional().describe("also show fired intentions (default false)") },
-    async ({ include_fired }) => {
+    "List prospective-memory intentions still ARMED (waiting for their trigger), oldest first. Anything fired, expired, done or cancelled is excluded by default. Use to review what reminders are set, or at session start to ask about the oldest few rather than reciting the whole ledger.",
+    {
+      include_fired: z.boolean().optional().describe("also show the last 10 fired intentions (default false)"),
+      include_closed: z.boolean().optional().describe("also show expired/done/cancelled rows (default false)"),
+      limit: z.number().optional().describe("how many armed rows to show, oldest first (default 20; 0 = all)")
+    },
+    async ({ include_fired, include_closed, limit }) => {
       try {
         const all = loadIntentions();
-        const pending = all.filter(i => !i.fired_at);
-        const fired = all.filter(i => i.fired_at).slice(-10);
-        const fmt = (i: any) => `- ${i.id} [${i.when.type}:${i.when.value}] ${i.note} (set ${i.created.slice(0, 10)}${i.fired_at ? `, fired ${i.fired_at.slice(0, 10)}` : ""})`;
-        const out = [`PENDING (${pending.length}):`, ...pending.map(fmt)];
-        if (include_fired && fired.length) out.push("", "RECENTLY FIRED:", ...fired.map(fmt));
+        // statusOf, not !fired_at: a row whose date passed, whose work landed, or that was
+        // merged into a sibling is not pending, and listing it as pending is how a ledger
+        // with a retirement path still reads as 140 open todos.
+        const armed = all.filter(i => statusOf(i) === "armed")
+          .sort((a, b) => a.created.localeCompare(b.created));
+        const n = limit === 0 ? armed.length : (limit ?? 20);
+        const fmt = (i: any) => `- ${i.id} [${i.when.type}:${i.when.value}] ${i.note} (set ${i.created.slice(0, 10)}${i.expires ? `, expires ${i.expires}` : ""}${i.fired_at ? `, fired ${i.fired_at.slice(0, 10)}` : ""}${i.closed_reason ? `, ${statusOf(i)}: ${i.closed_reason}` : ""})`;
+        const out = [`ARMED (${armed.length})${armed.length > n ? `, oldest ${n}` : ""}:`, ...armed.slice(0, n).map(fmt)];
+        if (armed.length > n) out.push(`... ${armed.length - n} more (pass limit:0 for all)`);
+        if (include_fired) {
+          const fired = all.filter(i => i.fired_at).slice(-10);
+          if (fired.length) out.push("", "RECENTLY FIRED:", ...fired.map(fmt));
+        }
+        if (include_closed) {
+          const closed = all.filter(i => !i.fired_at && statusOf(i) !== "armed").slice(-25);
+          if (closed.length) out.push("", "CLOSED (last 25):", ...closed.map(fmt));
+        }
+        out.push("", `counts: ${JSON.stringify(auditCounts(all))}`);
         return { content: [{ type: "text", text: out.join("\n") }] };
+      } catch (e: any) { return { content: [{ type: "text", text: `error: ${e.message}` }] }; }
+    }
+  );
+
+  server.tool(
+    "close_intention",
+    "Close prospective-memory intentions that are finished or no longer live, so they stop resurfacing. Use when work an intention was tracking actually lands ('done'), or when the commitment was dropped, superseded, or is a duplicate of another intention ('cancelled'). Nothing is deleted: the row keeps its text and can be reopened with `npx tsx .claude/bin/prospective.ts --restore=ID`. Get ids from list_intentions.",
+    {
+      ids: z.array(z.string()).describe("intention ids to close"),
+      status: z.enum(["done", "cancelled"]).describe("'done' = the commitment was met; 'cancelled' = dropped, superseded, or duplicate"),
+      reason: z.string().describe("one line saying why, e.g. 'ML4H submitted 2026-09-10' or 'duplicate of 436a185a6432'")
+    },
+    async ({ ids, status, reason }) => {
+      try {
+        const n = closeIntentions(ids, status, reason);
+        log(`close_intention ${status} ${ids.length}`);
+        const counts = auditCounts(loadIntentions());
+        return { content: [{ type: "text", text: `Closed ${n}/${ids.length} as ${status}: ${reason}\ncounts: ${JSON.stringify(counts)}\nUndo: npx tsx .claude/bin/prospective.ts --restore=${ids.join(",")}` }] };
       } catch (e: any) { return { content: [{ type: "text", text: `error: ${e.message}` }] }; }
     }
   );
@@ -626,7 +700,11 @@ async function main() {
             const semFacts = merged.filter(h => h.layer === "fact" && h.factKey && !seen.has(h.factKey)).slice(0, 10);
             if (semFacts.length) factText = [factText, ...semFacts.map(h => `- [semantic ${h.score.toFixed(3)}] ${h.text}`)].filter(Boolean).join("\n");
           }
-          const pool = merged.filter(h => layers.includes(h.layer!));
+          // Prose gets its own layer-scoped, fact-free retrieval. Filtering the shared
+          // global pool by layer returned nothing: persona is ~0.6% of the store, and
+          // the 24 boosted facts in that pool outrank every chunk anyway. The two
+          // sources are asked for separately because they compete on the same scale.
+          const pool = await queryVectorStore(query, 8, { onlyLayers: layers, factK: 0 });
           if (pool.length) {
             const ranked = await rerank(query, pool, h => h.text.slice(0, 400));
             proseText = ranked.slice(0, 5).map(r => `[${r.score.toFixed(3)} ${r.item.layer}] ${r.item.filePath}\n${r.item.text.replace(/\s+/g, " ").slice(0, 500)}`).join("\n\n");
@@ -640,9 +718,61 @@ async function main() {
   );
 
   const s = stats();
+  if (process.argv.includes("--http")) return serveHttp(makeServer, s);
   log(`server starting; vault=${VAULT}; store=${s.files} files/${s.chunks} chunks; layers=${layerStats().map(l => l.layer).join(",")}`);
-  await server.connect(new StdioServerTransport());
+  await makeServer().connect(new StdioServerTransport());
   log("server connected (stdio)");
+  // Exit with the session. The SDK transport does not exit on stdin EOF, and an open
+  // SQLite handle keeps the event loop alive, so a session that died uncleanly could
+  // leave this server behind. Watch both stdin and the parent PID (unref'd timer).
+  const bye = (why: string) => { log(`exiting: ${why}`); process.exit(0); };
+  process.stdin.on("end", () => bye("stdin end"));
+  process.stdin.on("close", () => bye("stdin close"));
+  const parent = process.ppid;
+  setInterval(() => { try { process.kill(parent, 0); } catch { bye(`parent ${parent} gone`); } }, 30_000).unref();
+}
+
+/**
+ * One shared server for every Claude session (2026-10-30). Under stdio each session
+ * started its own copy, and each copy opened the 97k-chunk store: 4-6 copies for the
+ * open sessions plus one per headless run, 230-260 starts a day. Registered in user
+ * scope as {"type":"http","url":"http://127.0.0.1:<port>/mcp"}; the LKHS watchdog
+ * keeps it listening. Stateless (no session ids), since no tool keeps per-session
+ * state, so a restart is invisible to open sessions.
+ */
+function serveHttp(makeServer: () => McpServer, s: { files: number; chunks: number }): void {
+  const port = mcpHttpPort();
+  const srv = http.createServer(async (req, res) => {
+    // DNS-rebinding guard: a web page that rebinds its own name to 127.0.0.1 reaches
+    // this port with a foreign Host header, and a browser always sends Origin on a
+    // cross-site POST. Claude Code and local tools send neither, so both are refused.
+    const host = String(req.headers.host || "");
+    if ((host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) || req.headers.origin) {
+      res.statusCode = 403; return res.end();
+    }
+    const url = (req.url || "").split("?")[0];
+    if (url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, pid: process.pid, rss_mb: Math.round(process.memoryUsage().rss / 1048576) })); }
+    if (url !== "/mcp") { res.statusCode = 404; return res.end(); }
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json", Allow: "POST" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed (stateless server)" }, id: null }));
+    }
+    const server = makeServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => { transport.close(); server.close(); });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (e: any) {
+      log(`http request failed: ${e.message}`);
+      if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null })); }
+    }
+  });
+  srv.on("error", (e: any) => {
+    if (e.code === "EADDRINUSE") { log(`http port ${port} taken; another shared server is running, exiting`); process.exit(0); }
+    log(`http server error: ${e.message}`);
+  });
+  srv.listen(port, "127.0.0.1", () => log(`shared http server on 127.0.0.1:${port}/mcp; store=${s.files} files/${s.chunks} chunks`));
 }
 
 // Guard so importing this module (eval-memory.ts uses recallPersonaFacts) does not

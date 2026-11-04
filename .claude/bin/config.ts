@@ -20,6 +20,7 @@
  */
 import * as fs from "fs";
 import * as os from "os";
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from "child_process";
 import * as path from "path";
 
 // <vault>/.claude/bin/config.ts -> <vault>
@@ -91,6 +92,8 @@ export function cacheDir(): string {
 export function logFile(): string { return path.join(vaultRoot(), ".claude", "logs", "ambient.log"); }
 
 // ---- ports ----------------------------------------------------------------
+/** Shared streamable-HTTP lkhs-memory MCP server (lkhs-mcp.ts --http). */
+export function mcpHttpPort(): number { return num(process.env.LKHS_MCP_PORT ?? config().mcpHttpPort, 7079); }
 export function daemonPort(): number { return num(process.env.LKHS_DAEMON_PORT ?? config().daemonPort, 7077); }
 export function webPort(): number { return num(process.env.LKHS_WEB_PORT ?? config().webPort, 7099); }
 
@@ -138,6 +141,21 @@ export function boostFloor(): number { return num(process.env.LKHS_BOOST_FLOOR ?
 export function entityMidFloor(): number { return num(process.env.LKHS_ENTITY_MID_FLOOR ?? config().entityMidFloor, 0.20); }
 /** Hard cap on injected items across all gate routes (rerank/meta/identity). */
 export function injectMaxItems(): number { return num(process.env.LKHS_INJECT_MAX_ITEMS ?? config().injectMaxItems, retrieveTopK()); }
+/** Byte ceiling on one injection payload, set below Claude Code's own hook limit so a
+ *  trim is ours and logged rather than the harness's and silent. */
+export function injectMaxBytes(): number { return num(process.env.LKHS_INJECT_MAX_BYTES ?? config().injectMaxBytes, 8000); }
+
+/* First-person rescue. The cross-encoder is trained on web-search relevance and
+ * underrates short questions about the user's own world ("how is my visa situation")
+ * even when the bi-encoder ranks the right passage first. The rescue keeps such a hit
+ * only when cosine is high AND the passage shares a content word with the question:
+ * cosine alone says "same neighbourhood", the shared word says "same subject". */
+export function rescueCosFloor(): number { return num(process.env.LKHS_RESCUE_COS ?? config().rescueCosFloor, 0.75); }
+export function rescueMaxItems(): number { return num(config().rescueMaxItems, 3); }
+/* Automemory files are hand-written by the user about themselves, so the shared-word
+ * half of the test is waived for them above this higher cosine. */
+export function automemoryRescueFloor(): number { return num(process.env.LKHS_AUTOMEM_RESCUE ?? config().automemoryRescueFloor, 0.80); }
+export function enableRescue(): boolean { return (config().enableRescue ?? true) !== false; }
 
 // ---- P4 hybrid retrieval levers ----------------------------------------------
 // Each lever is independently flag-gated so a lever that regresses the eval can be
@@ -199,7 +217,8 @@ export const META_RE = /\b(what am i working on|what are my|overview of|across (
 export const IDENTITY_RE = /\b(who am i|about (me|myself)|tell me about (me|myself)|what do you know about me|my (background|personality|psycholog|cognitive|values|worldview|biograph|history|life|identity|self|voice|writing style|mind|decision)|how does my mind|how i think|communicate with me|talk(ing)? to me|work with me|advise me|decision[- ]?(making|patterns?)|make decisions|how should (you|i) .* me)\b/i;
 
 // ---- models ---------------------------------------------------------------
-export function summaryModel(): string { return process.env.LKHS_SUMMARY_MODEL || config().summaryModel || "claude-sonnet-4-6"; }
+// Aliases, never dated ids: an alias tracks the newest model, a pinned id goes stale.
+export function summaryModel(): string { return process.env.LKHS_SUMMARY_MODEL || config().summaryModel || "sonnet"; }
 // Parallel `claude -p` workers for evals, judges and miners (llm-pool.ts). These
 // passes are embarrassingly parallel and were all running strictly sequentially;
 // 6 is conservative for a subscription and keeps a long eval interactive.
@@ -222,6 +241,81 @@ export function claudeBin(): string {
   for (const c of candidates) { try { if (fs.existsSync(c)) { _claudeBin = c; return c; } } catch { /* */ } }
   _claudeBin = "claude";
   return _claudeBin;
+}
+
+/** Flags every `claude -p` the vault spawns must carry. Without them each headless
+ *  call is a full session: it starts every user MCP server, runs every hook and
+ *  plugin, loads the skill list and writes a transcript. With them a run starts no
+ *  MCP children and fires no hooks, and subscription auth still works (unlike
+ *  --bare, which needs an API key). The settings path must be space-free: some
+ *  callers spawn with shell:true. */
+let _headlessSettings: string | null = null;
+export function headlessFlags(): string[] {
+  if (!_headlessSettings) {
+    const dir = /\s/.test(os.homedir()) ? os.tmpdir() : path.join(os.homedir(), ".claude");
+    _headlessSettings = path.join(dir, "lkhs-headless-settings.json");
+    try {
+      if (!fs.existsSync(_headlessSettings)) fs.writeFileSync(_headlessSettings, JSON.stringify({ disableAllHooks: true }) + "\n");
+    } catch { /* checked below */ }
+  }
+  // A --settings path that does not exist makes claude exit 1, which would fail every
+  // summarizer; losing the hook skip is the lesser cost.
+  const settings = fs.existsSync(_headlessSettings) ? ["--settings", _headlessSettings] : [];
+  return ["--strict-mcp-config", ...settings, "--no-session-persistence", "--disable-slash-commands"];
+}
+
+// ---- daily model-call budget (Pro plan) ---------------------------------------
+// Every background `claude -p` call is counted against one daily ledger shared by all
+// processes (.claude/logs/llm-budget.json, keyed by local date). Two numbers:
+//   dailyCalls      total background calls allowed per day
+//   captureReserve  the last N of those are kept for session capture, so a heavy
+//                   nightly refresh can never starve the step that records memory
+// Config: "llmBudget": { "dailyCalls": 30, "captureReserve": 12 }. Env overrides:
+// LKHS_DAILY_LLM_CALLS, LKHS_CAPTURE_RESERVE. Absent, "off" or 0 means no cap, which
+// suits a Max plan; setup and `upgrade --plan pro` write the cap for a Pro plan. A
+// refused call behaves exactly like a failed model call: every call site already has
+// a fallback for that, and capture falls back to an extractive summary.
+export function llmBudget(): { dailyCalls: number; captureReserve: number } {
+  const c = config().llmBudget || {};
+  const rawDaily = process.env.LKHS_DAILY_LLM_CALLS ?? c.dailyCalls;
+  const daily = rawDaily == null || String(rawDaily).toLowerCase() === "off" ? 0 : num(rawDaily, 0);
+  return { dailyCalls: daily, captureReserve: num(process.env.LKHS_CAPTURE_RESERVE ?? c.captureReserve, 12) };
+}
+const localDay = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+function budgetFile(): string { return path.join(vaultRoot(), ".claude", "logs", "llm-budget.json"); }
+/** Today's ledger: { day, total, byLabel, refused }. */
+export function llmBudgetState(): { day: string; total: number; byLabel: Record<string, number>; refused: number } {
+  const s = readJson(budgetFile());
+  return s && s.day === localDay() ? s : { day: localDay(), total: 0, byLabel: {}, refused: 0 };
+}
+/** Count one call under `label` if the budget allows it; false means skip the call. */
+export function llmAllow(label: string): boolean {
+  const { dailyCalls, captureReserve } = llmBudget();
+  if (dailyCalls <= 0) return true;
+  const s = llmBudgetState();
+  const limit = label === "capture" ? dailyCalls : Math.max(0, dailyCalls - captureReserve);
+  const ok = s.total < limit;
+  if (ok) { s.total++; s.byLabel[label] = (s.byLabel[label] || 0) + 1; } else s.refused++;
+  try {
+    fs.mkdirSync(path.dirname(budgetFile()), { recursive: true });
+    const tmp = `${budgetFile()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
+    fs.renameSync(tmp, budgetFile());
+  } catch { /* the ledger is best-effort; a write failure never blocks memory */ }
+  if (!ok) {
+    try { fs.appendFileSync(path.join(vaultRoot(), ".claude", "logs", "ambient.log"), `[${new Date().toISOString()}] budget: refused ${label} (${s.total}/${dailyCalls} used today)\n`); } catch { /* */ }
+  }
+  return ok;
+}
+/** spawnSync for a `claude -p` call, gated by llmAllow. Over budget it returns a failed
+ *  result without starting a process, which each caller already treats as a model failure.
+ *  backport.mjs rewrites every engine call site to this, so a sync cannot drop the gate. */
+export function llmSpawnSync(label: string, cmd: string, args: string[], opts: SpawnSyncOptions = {}): SpawnSyncReturns<any> {
+  if (!llmAllow(label)) {
+    const empty: any = opts.encoding && opts.encoding !== "buffer" ? "" : Buffer.alloc(0);
+    return { pid: 0, output: [null, empty, empty], stdout: empty, stderr: empty, status: 1, signal: null, error: new Error(`lkhs: daily model-call budget reached (${label})`) };
+  }
+  return spawnSync(cmd, args, opts);
 }
 export function chatModel(): string { return process.env.LKHS_CHAT_MODEL || config().chatModel || summaryModel(); }
 
