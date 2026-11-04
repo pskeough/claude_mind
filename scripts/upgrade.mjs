@@ -64,6 +64,8 @@ const MUTABLE = [
   { file: path.join(".claude", "memory", "MEMORY.md"), keep: true },
   { file: "VAULT-INDEX.md", keep: true },
   { file: "CLAUDE.md", keep: false },
+  // npm install rewrites the lockfile on every machine; upstream's copy is the one to take.
+  { file: "package-lock.json", keep: false },
 ];
 
 // What a Pro plan (USD 20) can carry: 30 background calls a day, the last 12

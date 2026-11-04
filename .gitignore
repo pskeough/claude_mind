@@ -85,3 +85,9 @@ graph/ppr-index.json
 lessons/
 # A voice corpus some installs keep inside the vault for the Mimesis engine.
 /mimesis/
+
+# Your own notes. Only the folder READMEs ship.
+wiki/*
+!wiki/README.md
+raw/*
+!raw/README.md
