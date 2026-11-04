@@ -63,7 +63,7 @@ function transcriptCwd(head: string): string {
 // session ledger with hundreds of micro-entries (2026-07-23 weekly report:
 // 225 in one week). The spawns set LKHS_CAPTURE=1, but env is invisible in
 // the transcript — the STABLE INSTRUCTION PHRASES are the durable signature.
-// The user's own headless -p sessions match none of these and stay captured
+// the user's own headless -p sessions match none of these and stay captured
 // (they are exactly what the sweep exists to cover).
 const AUTOMATION_RE = /output ONLY the requested JSON|BEGIN_FACTS|BEGIN_CONVERSATION|BEGIN_SESSION_LOG|BEGIN_PROJECT_DIGEST|LKHS ambient compile|archivist instructions|injected by a personal memory system under a privacy profile/;
 function isAutomation(head: string): boolean {

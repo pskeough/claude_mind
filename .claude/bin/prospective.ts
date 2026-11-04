@@ -69,6 +69,34 @@ export function addIntention(when: Intention["when"], note: string, source: stri
   return it;
 }
 
+/**
+ * Does a prompt mention an entity trigger?
+ *
+ * Was a contiguous substring test (`pk.includes(canonKey(value))`), which is far too
+ * literal for a trigger a human phrased months earlier. An intention keyed on
+ * "uts application" never fired on "the a deadline-bearing application" or "my application to
+ * UTS", because neither contains that exact adjacent pair; measured against real prompt
+ * history, that one trigger went from 0 matches to 19 under the change below.
+ *
+ * Token-subset instead: every token of the trigger must appear somewhere in the prompt,
+ * order-independent. Still conjunctive, so it does not become a topic match - a
+ * two-token trigger needs both tokens present, which is what keeps it from firing on
+ * every mention of "application".
+ *
+ * A token matches a whole word, or a word that STARTS with it once it is 4+ characters.
+ * The prefix allowance is what carries inflections: without it "claude mind" stopped
+ * matching "claude minds" and the change lost 4 real matches while gaining 28. Short
+ * tokens stay anchored to word starts rather than free substrings, because a bare
+ * substring test on a 3-letter token is how "uts" begins matching "outset".
+ */
+export function entityMatches(promptKey: string, value: string): boolean {
+  const toks = canonKey(value).split(" ").filter(Boolean);
+  if (!toks.length) return false;
+  const words = promptKey.split(" ").filter(Boolean);
+  const set = new Set(words);
+  return toks.every(t => set.has(t) || (t.length >= 4 && words.some(w => w.startsWith(t))));
+}
+
 /** Unfired, unexpired intentions whose condition is true for this prompt/cwd/date.
  *  opts.noDateTriggers (P10 etiquette): hold date-triggered reminders in personal
  *  sessions; they fire on the next work-session prompt instead. */
@@ -84,7 +112,7 @@ export function matchIntentions(prompt: string, cwd: string | undefined, nowMs =
     if (new Date(i.created).getTime() < expireMs) return false;
     if (i.when.type === "date") return !opts.noDateTriggers && i.when.value <= today;
     if (i.when.type === "project") return !!proj && (proj.includes(canonKey(i.when.value)) || canonKey(i.when.value).includes(proj));
-    return pk.includes(canonKey(i.when.value)); // entity
+    return entityMatches(pk, i.when.value);
   });
 }
 

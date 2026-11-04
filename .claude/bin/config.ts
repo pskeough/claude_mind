@@ -37,17 +37,35 @@ let _cfg: any | undefined;
 export function config(): any {
   if (_cfg !== undefined) return _cfg;
   const base = readJson(GLOBAL_CONFIG) || {};
-  // resolve repo-local against the env/global-derived root so a centralVault override is honored
-  const root = process.env.LKHS_VAULT_ROOT?.trim() || base.centralVault || DERIVED_ROOT;
-  const local = readJson(path.join(path.resolve(root), ".claude", "lkhs.config.json"));
+  // A shipped clone must be self-contained. The repo-local config is read from
+  // DERIVED_ROOT FIRST — that path is knowable without consulting any config — so a
+  // clone can override centralVault. Reading it from the global centralVault instead
+  // was a chicken-and-egg: on a machine whose global config points at another vault,
+  // every clone silently read THAT vault's memory and could never say otherwise.
+  const own = ownConfig();
+  const root = process.env.LKHS_VAULT_ROOT?.trim() || own?.centralVault || base.centralVault || DERIVED_ROOT;
+  const local = readJson(path.join(path.resolve(root), ".claude", "lkhs.config.json")) || own;
   _cfg = local ? { ...base, ...local } : base;
   return _cfg;
 }
 
 /** The vault root. env LKHS_VAULT_ROOT > config.centralVault > derived (../..). */
+// The repo-local config is read ONCE. vaultRoot() is called by memDir(), dbPath(),
+// cacheDir() and logFile(), i.e. constantly on the hot path — an uncached statSync +
+// parse per call would be a real cost for a file that cannot change mid-process.
+let _own: any | undefined;
+function ownConfig(): any {
+  if (_own === undefined) _own = readJson(path.join(DERIVED_ROOT, ".claude", "lkhs.config.json"));
+  return _own;
+}
+
 export function vaultRoot(): string {
   const env = process.env.LKHS_VAULT_ROOT;
   if (env && env.trim()) return path.resolve(env.trim());
+  // Own config wins over the global one: see config() above.
+  const own = ownConfig();
+  if (own?.centralVault && String(own.centralVault).trim()) return path.resolve(String(own.centralVault).trim());
+  if (own && own.selfContained === true) return DERIVED_ROOT;
   const cv = config().centralVault;
   if (cv && String(cv).trim()) return path.resolve(String(cv).trim());
   return DERIVED_ROOT;
@@ -56,7 +74,12 @@ export function vaultRoot(): string {
 const num = (v: any, d: number): number => { const n = Number(v); return Number.isFinite(n) ? n : d; };
 
 // ---- paths ----------------------------------------------------------------
-export function memDir(): string { return path.join(vaultRoot(), ".claude", "memory"); }
+// LKHS_MEM_DIR redirects the whole memory directory. Only for tests that exercise a
+// ledger's write gates: those have to actually write, and writing probe records into the
+// real ledger to prove that rejection works would be its own kind of defect.
+export function memDir(): string {
+  return process.env.LKHS_MEM_DIR || path.join(vaultRoot(), ".claude", "memory");
+}
 export function dbPath(): string {
   return process.env.LKHS_DB_PATH || path.join(memDir(), "vector_store.db");
 }
@@ -157,6 +180,13 @@ export function supersedeCarry(): number { return num(config().supersedeCarry, 0
 // above these floors, so unrelated prompts silently produce nothing.
 export function skillSuggestFloor(): number { return num(config().skillSuggestFloor, 0.30); } // cross-encoder rerank floor
 export function skillCosineFloor(): number { return num(config().skillCosineFloor, 0.55); }   // cosine fallback floor (rerank off/failed)
+// Tier-2 method injection is budgeted by TOKENS, not by rank, because ranking N
+// principles reliably turned out to be harder than injecting them and letting the
+// session model judge applicability (a cross-encoder and an LLM judge both failed at it).
+// The token ceiling is the guard for a ledger that grows; on a fresh vault with few
+// principles the whole set costs far less than the cap and nothing is dropped.
+export function methodInjectMaxTokens(): number { return num(config().methodInjectMaxTokens, 3500); }
+export function methodInjectMax(): number { return num(config().methodInjectMax, 14); }
 
 // Intent regexes (shared). Previously duplicated (and divergent) between the
 // daemon and the web console; these are the daemon's authoritative versions.
@@ -170,6 +200,10 @@ export const IDENTITY_RE = /\b(who am i|about (me|myself)|tell me about (me|myse
 
 // ---- models ---------------------------------------------------------------
 export function summaryModel(): string { return process.env.LKHS_SUMMARY_MODEL || config().summaryModel || "claude-sonnet-4-6"; }
+// Parallel `claude -p` workers for evals, judges and miners (llm-pool.ts). These
+// passes are embarrassingly parallel and were all running strictly sequentially;
+// 6 is conservative for a subscription and keeps a long eval interactive.
+export function llmConcurrency(): number { return num(process.env.LKHS_LLM_CONCURRENCY ?? config().llmConcurrency, 6); }
 
 /** Absolute path to the claude CLI. Spawned shells (scheduled tasks, hooks, tools)
  *  do not reliably carry ~\.local\bin on PATH, so bare "claude" is intermittent on
@@ -240,6 +274,37 @@ export function nudgeFloor(): number { return num(process.env.LKHS_NUDGE_FLOOR ?
 // via knowledge-graph neighbors of entities named in the prompt, then re-gate. One
 // extra embed+knn+rerank, only on the uncertain band (GraphSearch local step).
 export function enableGraphHop(): boolean { return (config().enableGraphHop ?? true) !== false; }
+// G1 graph recall channel (HippoRAG-style Personalized PageRank over graph/ppr-index.json).
+// Entities named in the prompt seed a random walk with restart; file-backed nodes it
+// reaches join the SAME candidate pool the bi-encoder fills, and the cross-encoder
+// still judges everything against the original prompt. This is the multi-hop channel:
+// it reaches passages that share no vocabulary with the query but are two links away.
+// No model call, no extra embed (the query vector is reused), single-digit ms.
+// Env override exists so eval-multihop can A/B the channel against an otherwise
+// identical daemon; without it the two arms would differ by more than the flag.
+export function enablePpr(): boolean {
+  const e = process.env.LKHS_ENABLE_PPR;
+  if (e !== undefined && e !== "") return !/^(0|false|off|no)$/i.test(e);
+  return (config().enablePpr ?? true) !== false;
+}
+// Restart probability. Higher = tighter around the named entities; 0.3 measured
+// better than the 0.15 PageRank default on a graph this hub-heavy.
+export function pprAlpha(): number { return num(process.env.LKHS_PPR_ALPHA ?? config().pprAlpha, 0.3); }
+// Hub-discount exponent: rank by mass / background^beta. 0 = raw mass (the ClaudeMind
+// node wins every query), 1 = full lift (obscure nodes win). See graph-ppr.background().
+export function pprBeta(): number { return num(process.env.LKHS_PPR_BETA ?? config().pprBeta, 0.75); }
+export function pprMaxFiles(): number { return num(process.env.LKHS_PPR_MAX_FILES ?? config().pprMaxFiles, 10); }
+export function pprMaxTerms(): number { return num(process.env.LKHS_PPR_MAX_TERMS ?? config().pprMaxTerms, 6); }
+// Hard cap on how many candidates the graph channel may add to the pool. The pool is
+// the reranker's input and the reranker is the expensive stage, so this is a latency
+// budget as much as a precision one.
+export function pprMaxCandidates(): number { return num(process.env.LKHS_PPR_MAX_CANDIDATES ?? config().pprMaxCandidates, 8); }
+// Additive rerank bump for graph-sourced hits, scaled by their normalized walk mass
+// and gated by boostFloor exactly like personaBoost. Fuses two independent relevance
+// signals instead of discarding the graph's after candidate selection. Set 0 to make
+// the channel pure recall-expansion.
+export function pprGraphBoost(): number { return num(process.env.LKHS_PPR_GRAPH_BOOST ?? config().pprGraphBoost, 0.08); }
+
 // P10 injection etiquette: sessions in these projects are PERSONAL. In work sessions,
 // personal-conversation journals stay out of topical injections (reachable via
 // explicit recall/identity phrasing); in personal sessions, date-triggered reminders

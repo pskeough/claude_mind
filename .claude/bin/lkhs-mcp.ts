@@ -255,7 +255,7 @@ async function main() {
   server.tool(
     "project_state",
     "Get the current state card for a project (what it is, status, recent decisions, open threads, key files). Use to resume or to recall where a project stands. Pass the project name; fuzzy-matched.",
-    { project: z.string().describe("project name, e.g. MyProject") },
+    { project: z.string().describe("project name, e.g. a second paper") },
     async ({ project }) => {
       try {
         const dir = path.join(VAULT, "cards");
@@ -399,7 +399,7 @@ async function main() {
     "record_claim",
     "Record a VERIFIED research claim in the claims ledger (research work only: papers, analyses, benchmarks). Use after verifying a number against raw data (e.g. during a paper claim audit): the ledger is the single source of truth for load-bearing stats, so stale values stop circulating in drafts. To correct an existing claim, pass supersedes with the old claim's id; the old row is marked stale automatically.",
     {
-      paper: z.string().describe("which paper/project, e.g. MyPaper"),
+      paper: z.string().describe("which paper/project, e.g. a paper project, a research paper"),
       claim: z.string().describe("the assertion, self-contained, e.g. 'Total judge calls across four models'"),
       value: z.string().describe("the load-bearing number exactly as it should appear, e.g. 'N=28,800'"),
       source: z.string().describe("file path or artifact that verifies it, e.g. assets/stats/final_counts.json"),
@@ -449,7 +449,7 @@ async function main() {
     "Seal or unseal a memory file. A SEALED file stays stored but never surfaces in retrieval or injection until unsealed or explicitly requested; use when the user wants painful or sensitive material to rest without deleting it ('stop bringing X up', 'let that rest', 'seal that'). action=list shows current seals. Sealing is reversible and never deletes anything.",
     {
       action: z.enum(["seal", "unseal", "list"]).describe("what to do"),
-      file: z.string().optional().describe("store-relative path, e.g. journal/SomeProject.md (required for seal/unseal)")
+      file: z.string().optional().describe("store-relative path, e.g. journal/Claude_Personal_Conv.md (required for seal/unseal)")
     },
     async ({ action, file }) => {
       try {
@@ -488,6 +488,56 @@ async function main() {
           .map((e: any) => { const o = e.source === node.id ? e.target : e.source; return { label: label.get(o), type: typeOf.get(o), weight: e.weight }; })
           .sort((a: any, b: any) => b.weight - a.weight).slice(0, 20);
         const out = `${node.label} (${node.type}) connects to:\n` + nbrs.map((n: any) => `  - ${n.label} (${n.type}, w=${n.weight.toFixed(1)})`).join("\n");
+        return { content: [{ type: "text", text: out }] };
+      } catch (e: any) { return { content: [{ type: "text", text: `error: ${e.message}` }] }; }
+    }
+  );
+
+  // ---- connect: what links two things ----------------------------------------
+  // The question vector search structurally cannot answer: the answer is a route
+  // through the graph, not a passage. Hub routes ("both are the user's work") are
+  // suppressed by default because they are true of every pair and explain nothing.
+  server.tool(
+    "connect",
+    "Explain how two things in the user's work are connected: the strongest routes between them through the knowledge graph, plus the concepts they both touch. Use for 'what connects X and Y', 'how does X relate to Y', 'is there any link between X and Y'. Answers questions semantic search cannot, because the answer is a path rather than a passage.",
+    {
+      a: z.string().describe("first concept, project, paper, or person"),
+      b: z.string().describe("second concept, project, paper, or person"),
+      allowHubs: z.boolean().optional().describe("include routes through the biggest hub nodes (default false: they explain nothing)")
+    },
+    async ({ a, b, allowHubs }) => {
+      try {
+        const { connectPaths } = await import("./graph-ppr");
+        const r = connectPaths(a, b, 3, 4, { allowHubs: !!allowHubs });
+        if (!r) return { content: [{ type: "text", text: `Could not resolve one of "${a}" / "${b}" in the graph (or graph/ppr-index.json is missing — run npm run graph).` }] };
+        const lines = [`${r.from}  <->  ${r.to}`];
+        if (r.viaHubs) lines.push(`(no specific route exists; these only connect through the graph's biggest hubs)`);
+        if (!r.paths.length) lines.push("No route within 4 hops.");
+        for (const p of r.paths) lines.push(`  [p=${p.strength.toExponential(2)}] ` + p.path.map(h => h.label).join("  ->  "));
+        if (r.shared.length) lines.push(``, `Both touch: ${r.shared.map(s => s.label).join(", ")}`);
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (e: any) { return { content: [{ type: "text", text: `error: ${e.message}` }] }; }
+    }
+  );
+
+  // ---- neighborhood: PPR-ranked associative recall ----------------------------
+  server.tool(
+    "neighborhood",
+    "Associative recall around a topic: runs a personalized-PageRank walk from the entities named in the query and returns the material most strongly connected to them, including files that share no wording with the query. Use for 'what else is tied to X', 'what am I forgetting about X', 'pull everything around X' — the multi-hop cases plain search misses.",
+    { query: z.string().describe("topic, project, or question"), k: z.number().optional().describe("max files, default 8") },
+    async ({ query, k }) => {
+      try {
+        const { pprQuery } = await import("./graph-ppr");
+        const r = pprQuery(query, { maxFiles: Math.min(Math.max(k ?? 8, 1), 20), maxTerms: 10 });
+        if (!r) return { content: [{ type: "text", text: "Nothing in the query matched a graph entity (try naming a project, paper, person, or tool)." }] };
+        const out = [
+          `Seeded from: ${r.seeds.map(s => `${s.label} (${s.type})`).join(", ")}`,
+          ``,
+          `Most connected material:`,
+          ...r.files.map(f => `  ${f.file}   <- ${f.label} (${f.type})`),
+          ``,
+          `Associated concepts: ${r.terms.map(t => t.label).join(", ") || "(none)"}`,
+        ].join("\n");
         return { content: [{ type: "text", text: out }] };
       } catch (e: any) { return { content: [{ type: "text", text: `error: ${e.message}` }] }; }
     }

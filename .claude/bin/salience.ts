@@ -64,7 +64,7 @@ async function main() {
     hindsightHead ? `--- hindsight headline ---\n${hindsightHead}` : "",
     "END_SALIENCE_SOURCE",
     "",
-    "You are the attention system of the user's personal memory brain. From the state above, pick the THREE things most worth their attention today and write:",
+    "You are the attention system of the user's personal memory brain. From the state above, pick the THREE things most worth his attention today and write:",
     "## Salience: 3 things (generated <date>)",
     "1. <thing> -- <one-sentence why, citing which artifact it came from>",
     "(repeat for 2 and 3)",

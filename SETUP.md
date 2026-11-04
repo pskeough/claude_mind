@@ -50,7 +50,7 @@ they didn't give):
 ```json
 {
   "user": {
-    "handle": "kath", "email": "", "display_name": "Kath", "legal_name": "",
+    "handle": "alex", "email": "", "display_name": "Alex", "legal_name": "",
     "age": 0, "nationality": "", "location_current": "Sydney",
     "education": ["..."], "core_interests": ["..."], "expertise_areas": ["..."],
     "tone": "warm, plain, direct", "formatting": "prose, light bullets",
@@ -108,31 +108,46 @@ for every key and its documentation):
 node scripts/finalize-setup.mjs --answers answers.json
 ```
 
+Steps 2-4 write to the user's HOME, not just this folder, which is what makes memory
+follow them into every project. It also means that if they ALREADY have Claude Mind
+installed from a different folder, this repoints it here. If you are unsure, run
+`node scripts/finalize-setup.mjs --answers answers.json --dry` first: it prints every
+path that would be touched and writes nothing.
+
 This runs four steps in order and stops on any failure:
 1. **write-config** → `.claude/memory/core_profile.json` + global `~/.claude/lkhs-capture-config.json`.
 2. **install-global-hooks** → copies the capture/retrieval hooks into `~/.claude/hooks/`
    and wires them into `~/.claude/settings.json` (backed up first; existing hooks preserved).
    Now memory captures and retrieval fire in EVERY project, not just this folder.
 3. **register-mcp** → registers the `lkhs-memory` MCP server at user scope.
-4. **install-launchd** → macOS only: loads four LaunchAgents: keepalive `daemon` +
-   `watcher`, hourly `sweep`, daily `dream`. On Windows/Linux this step no-ops —
-   register the equivalent scheduled jobs per the **Persistence** section below.
+4. **background jobs** → on macOS this step loads four LaunchAgents automatically. On
+   Windows and Linux it prints a pointer instead, so you must run the next command
+   yourself or the vault will never capture or consolidate anything on its own:
 
-Confirm: `launchctl list | grep claudemind` (4 jobs) and `claude mcp list` (lists
-`lkhs-memory`). **Keep `answers.json`** (it is local and gitignored). It lets the user
+```bash
+npm run install:jobs
+```
+
+   Same four jobs on every platform: keepalive `daemon` + `watcher`, hourly `sweep`,
+   nightly `refresh`. Safe to run on macOS too (it delegates to the launchd installer).
+   `--dry` shows what it would register; `--remove` unregisters.
+
+Confirm the jobs exist — `launchctl list | grep claudemind` on macOS,
+`schtasks /Query /TN ClaudeMind-Daemon` on Windows — and that `claude mcp list` shows
+`lkhs-memory`. **Keep `answers.json`** (it is local and gitignored). It lets the user
 re-run `node scripts/finalize-setup.mjs --answers answers.json` in one command if they
 ever move the folder, repair the install, or upgrade — see "Persistence" below.
 
 ---
 
-## Step 3 — Ingest her files and projects
+## Step 3 — Ingest their files and projects
 
 ```bash
 npm run ingest:dirs
 ```
 
 Walks each `ingestRoot`, treats each immediate subfolder as a project, and writes a
-digest + embeddings into `library/`. This is the "map out all her work" pass and can
+digest + embeddings into `library/`. This is the "map out all their work" pass and can
 take a while on large trees (it summarizes via the `claude` CLI). Watch the output;
 re-run anytime to pick up new projects (it is incremental / hash-skipped).
 
@@ -216,11 +231,14 @@ tools should be callable from any project.
 
 ## Persistence — set up once, then it runs itself
 
-**macOS**: `npm run install:launchd` (done in Step 2) loads the four LaunchAgents.
+**All platforms**: `npm run install:jobs` registers all four background jobs on whatever OS
+this is — LaunchAgents on macOS, Task Scheduler on Windows, printed systemd/cron commands
+on Linux. Run it once; `--dry` shows what it would do, `--remove` unregisters.
 
-**Windows**: launchd does not exist; register the equivalent Task Scheduler jobs
-yourself (run these from the vault folder, substituting the absolute vault path;
-confirm with the user first since they modify system scheduling):
+**Windows**: `npm run install:jobs` handles this. It passes argv directly to `schtasks`
+rather than building a command string, which is what used to make the quoting fail on
+vault paths containing spaces. The equivalent manual commands, if you want to see what it
+registers:
 
 ```powershell
 $V = (Get-Location).Path; $N = (Get-Command node).Source
@@ -230,10 +248,10 @@ schtasks /Create /TN "ClaudeMind-Sweep"   /SC HOURLY  /TR "`"$N`" --import tsx `
 schtasks /Create /TN "ClaudeMind-Refresh" /SC DAILY /ST 04:00 /TR "`"$N`" `"$V\scripts\refresh.mjs`"" /F
 ```
 
-(Each task should also set the working directory to the vault; if `schtasks` quoting
-fights you, create the four tasks in the Task Scheduler UI instead — same commands.)
+(The installer handles the quoting; these are shown for transparency, not to be typed.)
 
-**Linux**: cron or systemd user timers with the same four commands.
+**Linux**: `npm run install:jobs` prints the four commands ready for systemd user units
+or cron.
 
 After this one install, the user does NOTHING to keep it working:
 

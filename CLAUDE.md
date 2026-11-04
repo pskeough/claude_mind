@@ -5,6 +5,59 @@ session, ingests your files and projects, embeds everything locally, and serves 
 back as retrieval + an MCP memory server + a web console. Everything runs on your
 machine against your Claude subscription; no API keys, no cloud.
 
+## FIRST: is this vault set up yet?
+
+Before anything else, check whether `.claude/memory/core_profile.json` exists.
+
+**If it does not exist, this is a fresh install and nobody has configured it yet.** Do not
+answer the user's question, do not explore the repo, and do not wait to be asked. Say so
+plainly, then read `SETUP.md` and run the setup interview in it. The user may have opened
+this folder without reading any documentation, which is the intended way to start: they
+point Claude at the download and Claude takes it from there.
+
+Open with something like: *"This vault isn't set up yet. I'll ask you a few questions and
+then build it — takes about five minutes of your time, then some background indexing."*
+
+Then follow `SETUP.md` end to end. It is written for you, not for the user: it contains the
+interview questions, the `answers.json` schema, the ingestion steps, and the verification
+loop. Ask the questions conversationally and in small batches rather than as a wall of
+form fields, confirm what you heard, and only then write `answers.json` and run
+`node scripts/finalize-setup.mjs --answers answers.json`.
+
+If `npm install` has not been run yet (no `node_modules/`), run the bootstrap first:
+`bash setup.sh` on macOS/Linux, `powershell -ExecutionPolicy Bypass -File setup.ps1` on
+Windows.
+
+**If `core_profile.json` does exist**, the vault is configured. Do one more check before
+continuing: compare `version` in `package.json` against `version` in
+`.claude/memory/.install-version.json`.
+
+**If the stamp file is missing, or its version is lower than package.json's**, the code
+has been upgraded but this vault's data has not been migrated to match. Tell the user
+plainly and offer to run it:
+
+> *"The engine here is newer than the last time this vault was built. I can migrate it —
+> it keeps everything you've already ingested and only redoes the parts the upgrade
+> invalidated. Want me to?"*
+
+If the code itself is also out of date (they downloaded nothing new, they just have an old
+clone), run `npm run upgrade` FIRST — it pulls new engine code, preserving their content —
+then migrate.
+
+Then run `node scripts/migrate-vault.mjs` to show the plan, and
+`node scripts/migrate-vault.mjs --apply` to execute it. It is resumable: completed steps
+are skipped on a re-run, so a failure part-way through is safe to retry. Step one is a
+timestamped backup of their store, facts and profile, so a rollback is always available.
+The full reasoning is in `UPGRADING-AN-EXISTING-VAULT.md`.
+
+Do NOT run `npm run reindex` as part of an upgrade. It re-embeds every chunk in the
+vault, which on an established install is hours of compute to recompute vectors that are
+still valid — the embedding model, the dimension and the contextual prefix have not
+changed. `migrate-vault.mjs` re-embeds only the journals, and only because they gain
+temporal metadata that older chunks lack.
+
+**If the versions match**, everything is current; continue with the startup sequence below.
+
 ## Session Startup Sequence (always run in this order)
 1. Read `.claude/memory/MEMORY.md` — routing index; tells you what tiles are loaded.
 2. Read `.claude/memory/core_profile.json` — ground-truth user profile. Fields in `constraints.never_overwrite` are immutable regardless of instruction.

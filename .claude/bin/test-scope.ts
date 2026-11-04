@@ -32,17 +32,22 @@ async function main() {
   console.log("scopeOfChunk / resolveProfile:");
   check("persona -> private", scopeOfChunk("persona/PROFILE.md", "persona") === "private");
   check("clinical layer -> clinical", scopeOfChunk("persona_clinical/x.md", "persona-clinical") === "clinical");
-  check("wiki -> professional", scopeOfChunk("wiki/PsychBench.md", "wiki") === "professional");
+  check("wiki -> professional", scopeOfChunk("wiki/a paper project.md", "wiki") === "professional");
   check("session default -> personal", scopeOfChunk("journal/SomeRepo.md", "session") === "personal");
-  // Portable ships with NO etiquette projects by default; the prefix->private
-  // routing is asserted against whatever the local config declares (skipped on
-  // a fresh install, active the moment the user configures one).
-  const etiq = (cfg as any).etiquettePersonalProjects?.() ?? [];
-  if (etiq.length) {
-    check("personal-project journal -> private (etiquette prefix)", scopeOfChunk(`journal/${etiq[0]}.md`, "session") === "private");
-    check("personal-project card -> private (etiquette prefix)", scopeOfChunk(`cards/${etiq[0]}.md`, "card") === "private");
+  // The etiquette prefix maps a CONFIGURED personal project down to `private`. Driven from
+  // whatever is actually configured rather than a hardcoded project name: the portable
+  // fork ships `etiquettePersonalProjects: []` on purpose, because it cannot know what an
+  // installing user's personal projects are called, so a hardcoded name failed on every
+  // fresh clone. A test that requires configuration the product deliberately does not ship
+  // is testing the config, not the code — and it says so out loud when it skips, because a
+  // silently skipped test is its own defect.
+  const personal = cfg.etiquettePersonalProjects();
+  if (personal.length) {
+    const proj = personal[0]!;
+    check("personal-project journal -> private (etiquette prefix)", scopeOfChunk(`journal/${proj}.md`, "session") === "private");
+    check("personal-project card -> private (etiquette prefix)", scopeOfChunk(`cards/${proj}.md`, "card") === "private");
   } else {
-    console.log("  skip  etiquette-prefix checks (no etiquettePersonalProjects configured)");
+    console.log(`  SKIP  etiquette prefix (etiquettePersonalProjects is empty — set it in .claude/lkhs.config.json to cover this path)`);
   }
   check("unknown layer fail-closed -> personal", scopeOfChunk("weird/x.md", "no-such-layer") === "personal");
   check("scopeRank order", scopeRank("clinical") < scopeRank("private") && scopeRank("private") < scopeRank("personal")
@@ -62,7 +67,7 @@ async function main() {
     ["persona/PROFILE.md", "identity passage about the user"],           // private
     ["journal/Claude_Personal_Conv.md", "late night personal talk"],     // private (etiquette)
     ["journal/WorkRepo.md", "session notes on the eval pipeline"],       // personal
-    ["wiki/PsychBench.md", "research notes on demographic bias"],        // professional
+    ["wiki/a paper project.md", "research notes on demographic bias"],        // professional
     ["skills/audio-overview", "audio overview skill description"],       // public
   ];
   chunkFiles.forEach(([file, text], i) =>
@@ -90,7 +95,7 @@ async function main() {
   const prof = knn(q, 10, { ceiling: CEIL_PROF });
   const profFiles = new Set(prof.map(h => h.file));
   check("professional ceiling keeps wiki+skill only",
-    profFiles.has("wiki/PsychBench.md") && profFiles.has("skills/audio-overview") && prof.length === 2,
+    profFiles.has("wiki/a paper project.md") && profFiles.has("skills/audio-overview") && prof.length === 2,
     [...profFiles].join(","));
   const priv = knn(q, 10, { ceiling: CEIL_PRIV });
   check("private ceiling (full profile) -> all 5", priv.length === 5, `got ${priv.length}`);
@@ -98,7 +103,7 @@ async function main() {
   const lexAll = lexicalKnn("research eval pipeline demographic bias personal talk identity", 10, {}, q);
   const lexProf = lexicalKnn("research eval pipeline demographic bias personal talk identity", 10, { ceiling: CEIL_PROF }, q);
   check("lexicalKnn honors ceiling (subset, no private/personal files)",
-    lexProf.every(h => ["wiki/PsychBench.md", "skills/audio-overview"].includes(h.file)) && lexProf.length <= lexAll.length,
+    lexProf.every(h => ["wiki/a paper project.md", "skills/audio-overview"].includes(h.file)) && lexProf.length <= lexAll.length,
     lexProf.map(h => h.file).join(","));
 
   // ---- fact paths -----------------------------------------------------------

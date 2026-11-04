@@ -22,6 +22,12 @@ HOME.md
 
 # --- personal identity / config: NEVER tracked ---
 .claude/memory/core_profile.json
+.claude/memory/backups/
+# The build ledger is the DEVELOPMENT vault decision log. It is not part of the
+# product and it names real projects and people; a stray copy would ship them.
+.claude/memory/build-decisions.jsonl
+.claude/memory/.install-version.json
+.claude/memory/.migration-progress.json
 .claude/lkhs.config.json
 ~/.claude/lkhs-capture-config.json
 answers.json
@@ -51,3 +57,15 @@ Thumbs.db
 .claude/memory/voice-rule-proposals.jsonl
 .claude/memory/reports/
 .claude/memory/eval/runs/
+
+
+# Learning system: MACHINERY ships, OBSERVATIONS do not. These are facts about one
+# person's machine and working style; a fresh install must mine its own.
+.claude/memory/lessons.jsonl
+.claude/memory/episodes.jsonl
+.claude/memory/PLAYBOOK.md
+.claude/memory/lesson-proposals.jsonl
+.claude/memory/episode_mined.json
+.claude/memory/preference_mined.json
+.claude/memory/cache/llm/
+graph/ppr-index.json

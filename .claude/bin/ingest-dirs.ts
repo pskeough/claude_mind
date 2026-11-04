@@ -15,7 +15,7 @@
  *
  *   npm run ingest:dirs                 # all roots, incremental
  *   npm run ingest:dirs -- --dry        # list projects, no work
- *   npm run ingest:dirs -- --root "C:\Research"
+ *   npm run ingest:dirs -- --root "C:\Work\Projects"
  *   npm run ingest:dirs -- --project Style_Clone --limit 1
  */
 import { spawnSync } from "child_process";
@@ -76,7 +76,7 @@ function walk(root: string, exclude: Set<string>): string[] {
 
 // ---- project discovery ----------------------------------------------------
 // A root's immediate children may be real projects OR category folders that
-// just contain projects (e.g. C:\AI Coding Projects\Online_AI\<project>). A dir
+// just contain projects (e.g. C:\Work\Projects\<group>\<project>). A dir
 // is a project if it has a marker file or direct code/prose files; otherwise it
 // is a container and we recurse one level. The central vault is never ingested.
 const PROJECT_MARKERS = new Set(["package.json", "pyproject.toml", "requirements.txt", ".git", "cargo.toml", "go.mod", "readme.md", "readme.txt", "readme"]);

@@ -23,7 +23,7 @@
  * sends each injected item's TEXT to a `claude -p` judge (summaryModel, per the
  * model policy) asking whether the text itself reveals a category the profile
  * ceiling excludes — a semantic leak, independent of labels. Found this way on
- * 2026-07-23 in the reference vault: three mis-scoped files (then fixed via
+ * 2026-07-23: wiki/Biography, cards/Letters, personal-correspondence material (then fixed via
  * chunkScopes.prefixes). Semantic-leak verdicts are reported separately and do
  * not fail the run by themselves; they are review queue, not oracle.
  */
@@ -118,19 +118,9 @@ async function main() {
     console.error(`daemon not reachable on :${PORT} — start it (npm run serve) first`); process.exit(1);
   }
 
-  let probes: Probe[] = fs.readFileSync(PROBES, "utf8").trim().split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l))
-    .filter(p => !ONLY_PROFILE || p.profile === ONLY_PROFILE);
-  if (SMOKE) {
-    // Fixed ids when present; otherwise (user-authored probe sets) one probe per
-    // profile/class so the smoke can never pass vacuously on zero probes.
-    const byId = probes.filter(p => SMOKE_IDS.has(p.id));
-    if (byId.length) probes = byId;
-    else {
-      const seen = new Set<string>();
-      probes = probes.filter(p => { const k = `${p.profile}/${p.class}`; if (seen.has(k)) return false; seen.add(k); return true; });
-    }
-    if (probes.length === 0) { console.log("scope-leak smoke SKIPPED: probe set is empty"); process.exit(0); }
-  }
+  const probes: Probe[] = fs.readFileSync(PROBES, "utf8").trim().split(/\r?\n/).filter(Boolean).map(l => JSON.parse(l))
+    .filter(p => !ONLY_PROFILE || p.profile === ONLY_PROFILE)
+    .filter(p => !SMOKE || SMOKE_IDS.has(p.id));
   const profiles = new Map(scopeProfiles().map(p => [p.name, p]));
 
   // fact key -> scope map for auditing `fact:` hits independently of the daemon

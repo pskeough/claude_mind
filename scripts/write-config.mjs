@@ -14,7 +14,7 @@
  *   "objectives": { "key": {"title","target","status","deadline"} },
  *   "projects":   { "key": {"focus","status","started","github"} },
  *   "domains": ["domain"],
- *   "ingestRoots": ["/Users/her/Documents/Work", "/Users/her/Projects"],
+ *   "ingestRoots": ["/Users/you/Documents/Work", "/Users/you/Projects"],
  *   "exclude": ["/abs/path/to/skip"],
  *   "summaryModel": "claude-sonnet-4-6"
  * }
@@ -76,6 +76,16 @@ const cpPath = path.join(VAULT, ".claude", "memory", "core_profile.json");
 fs.mkdirSync(path.dirname(cpPath), { recursive: true });
 fs.writeFileSync(cpPath, JSON.stringify(coreProfile, null, 2) + "\n");
 console.log(`  + ${cpPath}`);
+
+// Stamp the engine version this vault was built by. CLAUDE.md compares it against
+// package.json on every session: a stamp lower than the code means the data predates the
+// engine and needs migrating. Without a stamp written HERE, a fresh install would look
+// like an un-migrated old one and be told to migrate on its very first session.
+const stampPath = path.join(VAULT, ".claude", "memory", ".install-version.json");
+let engineVersion = "0.0.0";
+try { engineVersion = JSON.parse(fs.readFileSync(path.join(VAULT, "package.json"), "utf8")).version || "0.0.0"; } catch { /* keep default */ }
+fs.writeFileSync(stampPath, JSON.stringify({ version: engineVersion, installedAt: new Date().toISOString(), fresh: true }, null, 2) + "\n");
+console.log(`  + ${stampPath}  (engine ${engineVersion})`);
 
 // ---- global lkhs-capture-config.json --------------------------------------
 const globalCfg = {

@@ -23,16 +23,19 @@ import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
 import { canonKey } from "./text-normalize";
-import { knn, layerKnn, stats, getDb, hybridSearch, sha256, recordInjections, decayBlend, metaDate } from "./store";
+import { knn, layerKnn, stats, getDb, hybridSearch, sha256, recordInjections, decayBlend, metaDate, filesKnn, lexicalKnn } from "./store";
 import { rerank, warm as warmReranker } from "./rerank";
 import { indexSkills, latestSkillMtime } from "./skill-index";
 import { matchIntentions, markFired } from "./prospective";
+import { pprQuery, connectPaths, loadIndex, seedsFor } from "./graph-ppr";
 import {
   daemonPort, retrieveThreshold, retrieveTopK, enableRerank, rerankPool,
   rerankMaxChars, rerankHigh, rerankLow, personaBoost, factBoost, metaFloor, identityFloor,
   gateItemFloor, boostFloor, entityMidFloor, injectMaxItems,
   skillSuggestFloor, skillCosineFloor, lexicalRrf, rrfK,
+  methodInjectMaxTokens, methodInjectMax,
   sessionHalfLifeDays, dedupJaccard, enableNudge, nudgeFloor, enableGraphHop, etiquettePersonalProjects,
+  enablePpr, pprAlpha, pprBeta, pprMaxFiles, pprMaxTerms, pprMaxCandidates, pprGraphBoost,
   resolveProfile, scopeRank, scopeProfiles,
   TRIVIAL_RE, RECALL_RE, META_RE, IDENTITY_RE,
 } from "./config";
@@ -118,14 +121,28 @@ const SKILL_MAX = 2;                            // at most this many suggestions
 let _model: Promise<FlagEmbedding> | null = null;
 const getModel = () => (_model ??= FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15 }));
 
+// Tiny prompt->vector memo. A single /gate call could embed the SAME prompt up to
+// three times (identity route, meta route, then the main pool, plus the graph-hop
+// retry and now the PPR channel). The embed is the second-most expensive stage after
+// the cross-encoder, and the prompt does not change within a call.
+const EMB_CACHE = new Map<string, number[]>();
+const EMB_CACHE_MAX = 16;
 async function embedQuery(q: string): Promise<number[]> {
+  const key = q.replace(/\s+/g, " ").trim();
+  const hit = EMB_CACHE.get(key);
+  if (hit) return hit;
   const model = await getModel();
-  for await (const batch of model.embed([`query: ${q.replace(/\s+/g, " ").trim()}`]))
-    for (const v of batch) return Array.from(v as ArrayLike<number>);
-  return [];
+  let out: number[] = [];
+  for await (const batch of model.embed([`query: ${key}`]))
+    for (const v of batch) { out = Array.from(v as ArrayLike<number>); break; }
+  if (out.length) {
+    EMB_CACHE.set(key, out);
+    if (EMB_CACHE.size > EMB_CACHE_MAX) EMB_CACHE.delete(EMB_CACHE.keys().next().value as string);
+  }
+  return out;
 }
 
-interface Hit { file: string; score: number; text: string; layer: string; meta?: string | null }
+interface Hit { file: string; score: number; text: string; layer: string; meta?: string | null; via?: string; graph?: number }
 const FACT_BOOST = factBoost();          // additive cosine bump for embedded fact hits in the pool
 // Stage timings (latency-degradation investigation, 2026-07-23): a shared `t`
 // object accumulates per-stage ms through the gate path and lands in
@@ -194,8 +211,9 @@ function intentSignal(prompt: string): string | null {
 
 // th = hash of the ORIGINAL chunk text (pre-truncation): the stable per-chunk key
 // that chunk_stats and the hindsight loop use to credit injections back to chunks.
-const snippet = (h: { file: string; score: number; layer: string; text: string }) =>
-  ({ file: h.file, score: Number(h.score.toFixed(3)), layer: h.layer, th: sha256(h.text).slice(0, 16), text: h.text.replace(/\s+/g, " ").slice(0, 320) });
+const snippet = (h: { file: string; score: number; layer: string; text: string; via?: string }) =>
+  ({ file: h.file, score: Number(h.score.toFixed(3)), layer: h.layer, th: sha256(h.text).slice(0, 16),
+     ...(h.via ? { via: h.via } : {}), text: h.text.replace(/\s+/g, " ").slice(0, 320) });
 
 const META_FLOOR = metaFloor();
 const IDENTITY_FLOOR = identityFloor(); // lower: identity prompts are short/vague but persona passages answer them
@@ -216,6 +234,189 @@ async function metaGate(prompt: string, ceiling?: number): Promise<any | null> {
   if (hits.length === 0) return null;
   const keep = dedupCap(hits).map(snippet);
   return { inject: true, query: prompt, hits: keep, reason: "meta-overview", signal: "meta" };
+}
+
+/**
+ * TASK-ONSET route: deliver METHOD principles when a kind of work begins.
+ *
+ * The action-trigger hook fires on a pending tool call, which is the right event for
+ * tool hygiene and the wrong one for method. "Verify every number against the raw
+ * output file before calling a revision reviewer-ready" does not apply to an Edit
+ * call; it applies to the DECISION to start revising. Measured consequence of getting
+ * this wrong: 0 of 62 action-trigger rules were tier 2, and 7 of 11 method principles
+ * reached nothing at all.
+ *
+ * So tier 2 gets its own event. When a prompt reads as the start of a piece of work
+ * rather than a question about the past, match it against the method principles by
+ * meaning and surface the ones that govern this kind of task.
+ *
+ * Deliberately NOT routed through the normal gate: the cross-encoder judges "I'm
+ * about to revise the paper" as not-a-memory-question and withholds, which is correct
+ * for memory and fatal for method. Same reason tier 1 needed a hook rather than
+ * better retrieval. Principles are few (tens, not thousands), so they are embedded
+ * once and matched directly.
+ */
+const TASK_ONSET_RE = /\b(let'?s|i'?m (going to|about to|gonna)|i (want|need) to|help me|next (i|we)|time to|start(ing)? (on|the|a)?|begin|set ?up|build|write|draft|revis(e|ing)|audit|analyz|analys|refactor|implement|design|run the|work on|clean up|go through|put together)\b/i;
+
+interface MethodLesson { id: string; domain: string; action: string; statement: string; falsifier: string; scope: string; trigger: string; vec?: number[] }
+let _method: MethodLesson[] = [];
+let _methodMtime = -1;
+
+function loadMethodLessons(): MethodLesson[] {
+  try {
+    const f = path.join(__dirname, "..", "memory", "lessons.jsonl");
+    const mtime = fs.statSync(f).mtimeMs;
+    if (mtime === _methodMtime) return _method;
+    const byId = new Map<string, any>();
+    for (const line of fs.readFileSync(f, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      try { const l = JSON.parse(line); byId.set(l.id, l); } catch { /* */ }
+    }
+    _method = [...byId.values()]
+      .filter(l => !l.invalid_at && l.status === "active" && (l.tier ?? 1) >= 2)
+      .map(l => ({ id: l.id, domain: l.domain, action: l.action, statement: l.statement, falsifier: l.falsifier, scope: l.scope || "professional", trigger: String(l.trigger?.match || l.domain) }));
+    _methodMtime = mtime;
+    return _method;
+  } catch { return []; }
+}
+
+// RECALL floor, not a precision floor.
+//
+// This was 0.52, raised from 0.42 to stop a multi-agent-audit principle outranking the
+// paper-revision ones on "lets get a paper draft ready to submit". That tuning was
+// solving the wrong problem. Ranking mattered only because delivery was capped at 2, and
+// the cap existed because the ledger was expected to be large. It is not: the full active
+// tier-2 set is 14 principles and renders to roughly 3,300 tokens.
+//
+// So the cap goes, and with it the need for a scorer that can rank 14 items correctly -
+// a problem a cross-encoder and an LLM judge have both already failed (d-013), because
+// whether a principle GOVERNS a situation is not a relation either was trained on. The
+// session model is already loaded and already reading the prompt; it makes the
+// applicability call for free, and it is the only judge here that has ever worked.
+// Cosine's remaining job is recall: keep out what is plainly unrelated, admit the rest,
+// and let the budget decide how much fits.
+const METHOD_FLOOR = 0.35;
+
+async function taskOnsetGate(prompt: string, ceiling?: number): Promise<any | null> {
+  const all = loadMethodLessons().filter(l => ceiling === undefined || scopeRank(l.scope) >= ceiling);
+  if (!all.length) return null;
+  const qv = await embedQuery(prompt);
+  if (!qv.length) return null;
+  // Embed the principles once per ledger change; there are tens of them.
+  // Embed the SITUATION, not the remedy. Matching on statement+action embeds what to
+  // DO, so a principle about enumerating claim values across document layers does not
+  // resemble "ready to submit" even though that is exactly when it applies. The
+  // trigger and domain describe the moment; the statement describes what is true at
+  // that moment. Both are situational; the action is not. Same lesson the tier-1
+  // trigger work taught - a token describing the fix does not predict the moment.
+  for (const l of all) if (!l.vec) l.vec = await embedQuery(`${l.trigger}. ${l.domain}. ${l.statement}`);
+  const nrm = (v: number[]) => { let n = 0; for (const x of v) n += x * x; return Math.sqrt(n) || 1; };
+  const qn = nrm(qv);
+  const scored = all.map(l => {
+    let d = 0; for (let i = 0; i < qv.length; i++) d += qv[i]! * l.vec![i]!;
+    return { l, s: d / (qn * nrm(l.vec!)) };
+  }).filter(x => x.s >= METHOD_FLOOR).sort((a, b) => b.s - a.s);
+  if (!scored.length) return null;
+
+  // NOT reranked. Tried and reverted 2026-08-05: the cross-encoder scored EVERY method
+  // principle below 0.10 against task-onset prompts, silencing the route completely.
+  // Second confirmation of the same thing - it is why this route bypasses the main gate
+  // at all. The reranker judges "does this passage ANSWER this query"; whether a
+  // principle GOVERNS a situation is a different relation it was never trained on.
+  //
+  // Truncate by TOKEN BUDGET, not by rank. Cosine still orders the list, so if the
+  // budget binds the best-matching principles are the ones that survive - but while the
+  // whole set fits, nothing is dropped on the strength of a signal that cannot reliably
+  // separate 0.61 from 0.65. Order still carries information for the reader even when it
+  // is not deciding inclusion, which is why `fit` stays printed.
+  const maxItems = methodInjectMax();
+  const budget = methodInjectMaxTokens();
+  const render = ({ l, s }: { l: any; s: number }) => [
+    `- ${l.action}`,
+    `    why: ${l.statement}`,
+    `    stale if: ${l.falsifier}`,
+    `    [${l.domain}, fit ${s.toFixed(2)}]`,
+  ].join("\n");
+  const finalTop: typeof scored = [];
+  let tokens = 0;
+  for (const x of scored) {
+    if (finalTop.length >= maxItems) break;
+    const cost = Math.ceil(render(x).length / 4);   // ~4 chars/token, good enough to budget
+    if (tokens + cost > budget && finalTop.length) break;
+    finalTop.push(x); tokens += cost;
+  }
+  // Truncation is the moment this route stops being "inject everything" and goes back to
+  // "rank, then drop the tail" — using a ranking measured at 46.2% top-1 with negative
+  // separation. That transition must never be silent, so it is logged with the gate
+  // decision. If this starts appearing, raise methodInjectMaxTokens or prune the ledger;
+  // do not let it quietly discard principles on a signal that cannot order them.
+  const truncated = finalTop.length < scored.length;
+
+  const body = finalTop.map(render).join("\n");
+  return {
+    inject: true, query: prompt, reason: "task-onset-method", signal: "method",
+    methodIds: finalTop.map(x => x.l.id),
+    methodTokens: tokens,
+    methodTruncated: truncated,
+    ...(truncated ? { methodDropped: scored.length - finalTop.length } : {}),
+    hits: [{
+      file: "lessons/method", score: Number(finalTop[0]!.s.toFixed(3)), layer: "method",
+      text: [
+        "Method principles synthesized from how this kind of work has actually gone before.",
+        "These are patterns across many past sessions, not rules. Weigh them against what",
+        "you are actually doing; the 'stale if' line is the observation that would mean a",
+        "principle no longer holds, so check for it rather than assuming either way.",
+        body,
+      ].join("\n"),
+    }],
+  };
+}
+
+/**
+ * Connector route: "how does X connect to Y", "what links A and B".
+ *
+ * Structurally unanswerable by retrieval — the answer is a route through the graph,
+ * and no single passage contains it. Previously these prompts fell into the meta
+ * route and came back with four topically-adjacent cards that never stated the
+ * relationship. Now the gate computes the actual routes and the shared neighbours,
+ * then backs them with the passages behind the endpoints.
+ *
+ * Requires TWO distinct entities from the prompt, so it cannot hijack ordinary
+ * "related work" phrasing that names only one thing.
+ */
+const CONNECT_RE = /\b(connect(s|ed|ion|ions)?|relate[sd]?|relationship|link(s|ed)?|tie(s|d)? (in)?to|overlap|(in|have in) common|bridge|thread between|do .* share)\b/i;
+const CONNECT_STRIP = new RegExp(CONNECT_RE.source, "gi");
+
+async function connectorGate(prompt: string, ceiling?: number): Promise<any | null> {
+  const idx = loadIndex();
+  if (!idx) return null;
+  // Seed on the OPERANDS, not the question. The vault has nodes called
+  // "Relationship" and "Research", so "what is the relationship between X and Y"
+  // otherwise seeds on the word "relationship" and answers about the wrong thing.
+  const seeds = seedsFor(prompt.replace(CONNECT_STRIP, " "), idx, 4);
+  if (seeds.length < 2) return null;
+  const [a, b] = [idx.label[seeds[0]!]!, idx.label[seeds[1]!]!];
+  const r = connectPaths(a, b, 3, 4);
+  if (!r || (!r.paths.length && !r.shared.length)) return null;
+
+  const lines = [`Knowledge-graph connection between ${r.from} and ${r.to}:`];
+  if (r.viaHubs) lines.push(`(no specific route: these two only meet through the graph's biggest hubs, i.e. they are barely connected)`);
+  for (const p of r.paths) lines.push(`  route: ${p.path.map(h => h.label).join(" -> ")}`);
+  if (r.shared.length) lines.push(`  both touch: ${r.shared.map(s => s.label).join(", ")}`);
+  const routeHit = { file: "graph/connections", score: 1, layer: "graph", text: lines.join("\n") };
+
+  // Back the route with real passages from around both endpoints, so the model gets
+  // the evidence and not just the topology.
+  const support: any[] = [];
+  try {
+    const qv = await embedQuery(prompt);
+    const walk = pprQuery(prompt, { alpha: pprAlpha(), beta: pprBeta(), maxFiles: 6, maxTerms: 0 });
+    if (qv.length && walk?.files.length)
+      support.push(...filesKnn(qv, walk.files.map(f => f.file), { ceiling }).slice(0, 3)
+        .map(h => snippet({ file: h.file, score: h.score, layer: h.layer, text: h.text, via: "ppr-file" })));
+  } catch { /* the topology alone is still a real answer */ }
+  return { inject: true, query: prompt, hits: [routeHit, ...support], reason: "graph-connector", signal: "connector",
+    ppr: { seeds: [a, b], terms: [], added: support.length } };
 }
 
 /** Identity route: cosine over the persona layer only. Surfaces the deep user model
@@ -304,6 +505,30 @@ async function gate(prompt: string, cwd?: string, profileName?: string): Promise
 
 async function gateMemory(prompt: string, personal = false, ceiling?: number, t?: StageT): Promise<any> {
   loadEntities(); // mtime-guarded no-op unless graph.json changed (keeps vocab fresh)
+
+  // Task-onset METHOD route runs before the connector and META routes. A prompt that
+  // opens a piece of work ("let's revise the paper", "I need to audit the claims") is
+  // not a memory question and the reranker will withhold on it, so if this does not
+  // run first the method tier is unreachable by construction. Self-limiting: it needs
+  // both onset phrasing AND a principle that clears the fit floor, and it returns null
+  // otherwise, falling through to every existing route unchanged.
+  if (TASK_ONSET_RE.test(prompt) && !TRIVIAL.test(prompt.trim())) {
+    try { const m = await taskOnsetGate(prompt, ceiling); if (m) return m; }
+    catch (e: any) { log(`task-onset route failed (falling through): ${e.message}`); }
+  }
+
+  // Connector queries go to the graph first. They otherwise get eaten by two other
+  // routes: META reads "how does X connect to Y" as an overview and answers with
+  // cards that are each about X or Y and never about the relationship, and IDENTITY
+  // claims "what do MY bias work and MY voice work have in common" as a self-query
+  // and returns biography. The route is self-limiting — connectorGate returns null
+  // unless the prompt resolves to TWO distinct graph entities — so a false positive
+  // on the regex costs one cheap index lookup and falls through.
+  if (CONNECT_RE.test(prompt) && !TRIVIAL.test(prompt.trim())) {
+    try { const c = await connectorGate(prompt, ceiling); if (c) return c; }
+    catch (e: any) { log(`connector route failed (falling through): ${e.message}`); }
+  }
+
   // Identity / self queries route to the persona layer first. P5: checked BEFORE the
   // length heuristic — "who am I" is 8 chars and was bounced as "too short" while being
   // exactly the prompt the persona layer exists for. Safe: identityFloor still gates.
@@ -319,13 +544,33 @@ async function gateMemory(prompt: string, personal = false, ceiling?: number, t?
   // Bi-encoder pulls a broad candidate pool (cheap, high recall). The cross-encoder
   // then judges true relevance. Pool is wider when reranking, just TOPK otherwise.
   const pool = await query(prompt, ENABLE_RERANK ? RERANK_POOL : TOPK, ceiling, t);
-  if (pool.length === 0) return { inject: false, reason: "no-candidates" };
+
+  // G1: the graph channel runs alongside, not instead. Two recall systems with
+  // different blind spots feed one judged pool: similarity finds what the prompt
+  // looks like, the walk finds what it is connected to.
+  let ppr: { hits: Hit[]; seeds: string[]; terms: string[] } = { hits: [], seeds: [], terms: [] };
+  // The dense pool's best files anchor the walk when the prompt names nothing.
+  const anchors = pool.slice(0, 3).map(h => h.file);
+  try { ppr = await pprCandidates(prompt, ceiling, t, anchors); }
+  catch (e: any) { log(`ppr channel failed (vector pool unaffected): ${e.message}`); }
+  const have = new Set(pool.map(h => h.file));
+  const added = ppr.hits.filter(h => !have.has(h.file));
+  const merged = added.length ? [...pool, ...added] : pool;
+
+  if (merged.length === 0) return { inject: false, reason: "no-candidates" };
+  const via = added.length ? { seeds: ppr.seeds, terms: ppr.terms, added: added.length } : null;
 
   if (ENABLE_RERANK) {
-    try { return await rerankGate(prompt, pool, false, personal, ceiling, t); }
+    try {
+      const r = await rerankGate(prompt, merged, false, personal, ceiling, t);
+      if (via) r.ppr = via;
+      return r;
+    }
     catch (e: any) { log(`rerank failed, falling back to cosine+intent: ${e.message}`); }
   }
-  return cosineIntentGate(prompt, pool);
+  const r = cosineIntentGate(prompt, merged);
+  if (via) r.ppr = via;
+  return r;
 }
 
 /**
@@ -346,6 +591,54 @@ function loadGraphCached(): any | null {
     if (mtime !== _graphMtime) { _graph = JSON.parse(fs.readFileSync(g, "utf-8")); _graphMtime = mtime; }
     return _graph;
   } catch { return null; }
+}
+
+/**
+ * G1 graph recall channel (HippoRAG-style). The bi-encoder can only return passages
+ * that LOOK like the prompt; this returns passages the prompt is CONNECTED to.
+ *
+ * prompt -> entities named in it -> personalized-PageRank walk -> file-backed nodes
+ * -> their best chunks (filesKnn, scored against the same query vector so the merged
+ * pool stays on one scale) + high-lift concept labels -> one FTS5 lexical pull.
+ *
+ * Everything it returns is a CANDIDATE. The cross-encoder still judges each passage
+ * against the original prompt at the calibrated thresholds, so a bad walk costs
+ * latency, never a bad injection. Scope ceiling is enforced inside filesKnn and
+ * lexicalKnn, so the graph is not a way around the audience ladder.
+ */
+async function pprCandidates(prompt: string, ceiling?: number, t?: StageT, anchorFiles?: string[]): Promise<{ hits: Hit[]; seeds: string[]; terms: string[] }> {
+  const empty = { hits: [] as Hit[], seeds: [] as string[], terms: [] as string[] };
+  if (!enablePpr()) return empty;
+  const t0 = Date.now();
+  const r = pprQuery(prompt, { alpha: pprAlpha(), beta: pprBeta(), maxFiles: pprMaxFiles(), maxTerms: pprMaxTerms(), anchorFiles });
+  if (!r || (!r.files.length && !r.terms.length)) { addT(t, "ppr", Date.now() - t0); return empty; }
+  const qv = await embedQuery(prompt);   // memoized: the main pool already paid for this
+  if (qv.length === 0) { addT(t, "ppr", Date.now() - t0); return empty; }
+
+  const cap = pprMaxCandidates();
+  // Carry the walk's own confidence forward. The graph score is independent evidence
+  // of relevance; using it only to CHOOSE candidates and then discarding it throws
+  // half the signal away. Normalized to [0,1] over this query's own file set so it
+  // is a rank signal, not an absolute one.
+  const topMass = Math.max(...r.files.map(f => f.mass), 1e-9);
+  const massOf = new Map(r.files.map(f => [f.file, f.mass / topMass]));
+  const hits: Hit[] = filesKnn(qv, r.files.map(f => f.file), { ceiling })
+    .map(h => ({ file: h.file, score: h.score, text: h.text, layer: h.layer, meta: h.meta ?? null, via: "ppr-file", graph: massOf.get(h.file) ?? 0 }));
+
+  // Concept nodes carry no file of their own. They are reached lexically instead:
+  // FTS5 over the expansion terms finds the passages that actually name them.
+  if (r.terms.length) {
+    try {
+      const lex = lexicalKnn(r.terms.map(x => x.label).join(" "), 6, { exclude: ["skill"], ceiling }, qv)
+        .map(h => ({ file: h.file, score: h.score, text: h.text, layer: h.layer, meta: h.meta ?? null, via: "ppr-term" }));
+      hits.push(...lex);
+    } catch { /* lexical is additive; a missing FTS index must not break the channel */ }
+  }
+  const seen = new Set<string>();
+  const out = hits.filter(h => { const k = `${h.file}#${h.text.slice(0, 80)}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => b.score - a.score).slice(0, cap);
+  addT(t, "ppr", Date.now() - t0);
+  return { hits: out, seeds: r.seeds.map(s => s.label), terms: r.terms.map(x => x.label) };
 }
 
 function graphNeighborTerms(prompt: string, maxSeeds = 2, maxNbrs = 6): string[] {
@@ -377,6 +670,13 @@ async function rerankGate(prompt: string, pool: Hit[], hopped = false, personal 
   // the cross-encoder scored ~0.000 must not ride the boost into the mid band and get
   // injected on a generic prompt (measured: "write a python debounce" pulled 4 such facts).
   for (const r of ranked) if ((r.item.layer === "persona" || r.item.layer === "fact") && r.score >= BOOST_FLOOR) r.score += PERSONA_BOOST; // facts are the persona's atomic layer
+  // G1 graph-signal fusion, on exactly the same discipline as the persona boost: it
+  // only applies when the RAW cross-encoder score already clears BOOST_FLOOR, so the
+  // graph can promote a passage the reranker already finds plausible but cannot
+  // manufacture relevance for one it scored at zero. Without the floor this would be
+  // a way for a well-connected but irrelevant document to ride the walk into context.
+  const GB = pprGraphBoost();
+  if (GB > 0) for (const r of ranked) if (r.item.graph && r.score >= BOOST_FLOOR) r.score += GB * r.item.graph;
   // P1 recency at the rerank stage: knn's cosine-stage decay is discarded once the
   // cross-encoder re-orders, so dated session chunks decay here too (short half-life;
   // floored inside decayBlend, never zeroing). Query-gated OFF for recall/identity/meta
@@ -393,7 +693,7 @@ async function rerankGate(prompt: string, pool: Hit[], hopped = false, personal 
   const top = ranked[0]!.score;
   // P0 instrumentation: the decision log records the ranked pool head regardless of
   // outcome, so skipped-but-close candidates are visible to the hindsight loop later.
-  const topk = ranked.slice(0, 8).map(r => ({ f: r.item.file, l: r.item.layer, s: Number(r.score.toFixed(4)) }));
+  const topk = ranked.slice(0, 8).map(r => ({ f: r.item.file, l: r.item.layer, s: Number(r.score.toFixed(4)), ...(r.item.via ? { v: r.item.via } : {}) }));
   const band = top >= RERANK_HIGH ? "high" : top < RERANK_LOW ? "low" : "mid";
   let inject: boolean, reason: string;
   if (top >= RERANK_HIGH) { inject = true; reason = "rerank-high"; }
@@ -460,8 +760,8 @@ async function rerankGate(prompt: string, pool: Hit[], hopped = false, personal 
       return true;
     })
     .slice(0, Math.min(TOPK, MAX_ITEMS))
-    .map(r => snippet({ file: r.item.file, score: r.score, layer: r.item.layer, text: r.item.text }));
-  if (keep.length === 0) keep = [snippet({ file: ranked[0]!.item.file, score: top, layer: ranked[0]!.item.layer, text: ranked[0]!.item.text })];
+    .map(r => snippet({ file: r.item.file, score: r.score, layer: r.item.layer, text: r.item.text, via: r.item.via }));
+  if (keep.length === 0) keep = [snippet({ file: ranked[0]!.item.file, score: top, layer: ranked[0]!.item.layer, text: ranked[0]!.item.text, via: ranked[0]!.item.via })];
   return { inject: true, query: prompt, hits: keep, reason, signal: reason, band, topk };
 }
 
@@ -496,6 +796,11 @@ function logDecision(prompt: string, result: any, ms: number): void {
       t: result._t || null,   // per-stage ms (emb/pool/rr) for the latency investigation
       band: result.band || null,
       reason: result.reason || result.signal || "",
+      // G1 attribution: what the graph channel contributed, and how much of it
+      // survived to injection. This is what makes the channel's value measurable
+      // in hindsight instead of assumed.
+      ppr: result.ppr || null,
+      pprKept: Array.isArray(result.hits) ? result.hits.filter((h: any) => h.via).length : 0,
       n: Array.isArray(result.hits) ? result.hits.length : 0,
       top: result.topk || (Array.isArray(result.hits) ? result.hits.map((h: any) => ({ f: h.file, l: h.layer, s: h.score })) : []),
       ms
@@ -524,6 +829,14 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/query") {
       const hits = await query(u.searchParams.get("q") || "", Number(u.searchParams.get("k") || TOPK));
       return res.end(JSON.stringify({ hits }));
+    }
+    if (u.pathname === "/ppr") {
+      // Debug/inspection: what the graph channel sees for a prompt, without the
+      // rerank stage. Used by the retrieval inspector and the multi-hop eval.
+      const q = u.searchParams.get("q") || "";
+      const t0 = Date.now();
+      const r = pprQuery(q, { alpha: pprAlpha(), beta: pprBeta(), maxFiles: pprMaxFiles(), maxTerms: pprMaxTerms() });
+      return res.end(JSON.stringify({ ms: Date.now() - t0, enabled: enablePpr(), ...(r || { seeds: [], files: [], terms: [] }) }));
     }
     if (u.pathname === "/sessions") {
       return res.end(JSON.stringify({ sessions: activeSessions(u.searchParams.get("exclude") || undefined) }));

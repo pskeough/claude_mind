@@ -49,7 +49,7 @@ installed and signed in (subscription — no API key anywhere). On macOS you'll 
 want the Xcode Command Line Tools (`xcode-select --install`); on Windows, the usual
 build tools that ship with recent Node installers are enough.
 
-**Non-technical, on a Mac? Read [`HER-QUICKSTART.md`](HER-QUICKSTART.md)** — the same
+**Non-technical? Read [`QUICKSTART.md`](QUICKSTART.md)** — the same
 install in 4 plain steps with no jargon.
 
 ```bash

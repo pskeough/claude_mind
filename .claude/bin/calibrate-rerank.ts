@@ -11,13 +11,16 @@ import { queryVectorStore } from "./vector-query";
 import { rerank, warm } from "./rerank";
 
 const PERSONAL = [
-  "what did I conclude about sycophancy severity scoring",
-  "how did I set up the Tai RAG ingestion",
-  "summarize the demographic bias findings from my research project",
-  "what is the architecture of the LKHS memory system",
-  "what did I decide about the abliteration active suppression hypothesis",
-  "what are the open threads on my novel draft",
-  "what models did I run for the Train LLM experiments",
+  // Replace these with seven questions only YOUR OWN vault can answer, drawn from
+  // projects you actually ingested. The threshold this harness prints is only as
+  // meaningful as the probes: generic placeholders calibrate a generic gate.
+  "what did I conclude about the main experiment",
+  "how did I set up the ingestion pipeline",
+  "summarize the findings from my current project",
+  "what is the architecture of the memory system",
+  "what did I decide about the open design question",
+  "what are the open threads on my writing project",
+  "what did I run for the last round of experiments",
 ];
 const GENERAL = [
   "what is the capital of France",

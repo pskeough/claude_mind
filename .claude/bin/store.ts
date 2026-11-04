@@ -34,6 +34,7 @@ export function sha256(text: string): string {
  *  (resume-by-project, recency, global vs specific queries). */
 export function layerOf(file: string): string {
   const f = file.replace(/\\/g, "/");
+  if (f.startsWith("lessons/")) return "lesson";   // procedural memory: mined lessons, retrievable like any other layer
   if (f.startsWith("skills/")) return "skill";     // synthetic namespace: SKILL.md name+description, for the semantic skill router
   if (f.startsWith("persona_clinical/")) return "persona-clinical"; // quarantined health tier: retrievable only on direct match, never boosted/always-on
   if (f.startsWith("persona/")) return "persona";  // identity layer: deep user model (heavily weighted)
@@ -421,6 +422,58 @@ export function layerKnn(queryVec: number[], layer: string, k = 8): Hit[] {
   return [...bestByFile.values()].sort((a, b) => b.score - a.score).slice(0, k);
 }
 
+/**
+ * G1 graph-recall channel: best chunk per file, restricted to an explicit file list.
+ *
+ * The PPR walk ranks NODES; this turns the file-backed ones into scored candidates.
+ * knn() cannot do it — its vec0 KNN LIMIT is distance-bounded, so a file the query
+ * shares no vocabulary with (exactly the multi-hop case worth retrieving) never
+ * enters its candidate pool. Brute-forces cosine over just these files' vectors,
+ * which is cheap because the list is a dozen files.
+ *
+ * Applies the SAME safety filters as knn: cold tier, sealed files, the profile's
+ * scope ceiling, and dated-prose validity. A graph route must never become a way
+ * around the scope ladder.
+ */
+export function filesKnn(
+  queryVec: number[], files: string[],
+  opts: { includeCold?: boolean; ceiling?: number; perFile?: number } = {}
+): Hit[] {
+  if (!files.length) return [];
+  const db = getDb();
+  const want = [...new Set(files.map(f => f.replace(/\\/g, "/")))];
+  const placeholders = want.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT c.file AS file, c.chunk_index AS chunkIndex, c.text AS text, c.layer AS layer,
+           c.meta AS meta, c.tier AS tier, v.embedding AS emb
+    FROM chunks c JOIN vec_chunks v ON v.rowid = c.id
+    WHERE c.file IN (${placeholders})
+  `).all(...want) as Array<{ file: string; chunkIndex: number; text: string; layer: string; meta: string | null; tier: string | null; emb: Uint8Array }>;
+
+  let qn = 0; for (const x of queryVec) qn += x * x; qn = Math.sqrt(qn) || 1;
+  const nowMs = Date.now();
+  const perFile = Math.max(1, opts.perFile ?? 1);
+  const byFile = new Map<string, Hit[]>();
+  for (const r of rows) {
+    if (!opts.includeCold && r.tier === "cold") continue;
+    if (isSealed(r.file)) continue;
+    if (opts.ceiling !== undefined && scopeRank(scopeOfChunk(r.file, r.layer)) < opts.ceiling) continue;
+    const m = parseMeta(r.meta);
+    if (m) { const inv = factDateMs(m.invalid_at); if (!isNaN(inv) && inv <= nowMs) continue; }
+    const buf = r.emb as any as Buffer;
+    const vec = new Float32Array(buf.buffer, buf.byteOffset, DIM);
+    let dot = 0, vnorm = 0;
+    for (let i = 0; i < DIM; i++) { const c = vec[i]!; dot += queryVec[i]! * c; vnorm += c * c; }
+    let score = dot / (qn * (Math.sqrt(vnorm) || 1));
+    if (m) score *= decayBlend(m.valid_at || m.source_date, nowMs);
+    const list = byFile.get(r.file) ?? byFile.set(r.file, []).get(r.file)!;
+    list.push({ file: r.file, chunkIndex: r.chunkIndex, text: r.text, layer: r.layer, meta: r.meta ?? null, score });
+  }
+  const out: Hit[] = [];
+  for (const [, list] of byFile) { list.sort((a, b) => b.score - a.score); out.push(...list.slice(0, perFile)); }
+  return out.sort((a, b) => b.score - a.score);
+}
+
 // ---- fact store (P2: embedded bi-temporal atomic facts) ----------------------
 
 export interface FactRow {
@@ -566,8 +619,8 @@ export function factKnn(queryVec: number[], k = 8, opts: { asOf?: string; includ
   // P4b graph expansion (supersession-chain forwarding): when an INVALIDATED fact
   // matches the query semantically, the CURRENT fact that superseded it is the live
   // answer to the same question — but often a semantically weaker match (e.g. "am I
-  // partnered?" matches a stale relationship fact strongly and the current
-  // "broke up" successor weakly). Forward the stale hit's cosine (attenuated by
+  // partnered?" matches the stale "has girlfriend Rianna" strongly and the current
+  // "broke up September 2025" weakly). Forward the stale hit's cosine (attenuated by
   // supersedeCarry) to its superseder, so the current state surfaces at roughly the
   // rank the stale fact earned. Exclusion of the stale fact itself is unchanged.
   const expand = (opts.expandSupersession ?? graphExpansion()) && !opts.includeSuperseded;

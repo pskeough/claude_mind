@@ -219,7 +219,7 @@ function selftest(): boolean {
   // 1) initial write
   const gen1 = [
     mk("pf-0001", "biography", "Enrolled at University of Washington, BA Psychology", "2024"),
-    mk("pf-0002", "biography", "Lives in Springfield, studying at State University", "2026"),
+    mk("pf-0002", "biography", "Lives in Sydney, targeting MRes at UTS", "2026"),
     mk("pf-0003", "research", "Runs LLM evaluation studies across 40,000+ responses."),
   ];
   const w1 = writeFactsFile(file, gen1);
@@ -236,7 +236,7 @@ function selftest(): boolean {
   // 3) simulated rebuild: SAME logical input, churned ids, temporal-field-free facts
   const gen2 = [
     mk("pf-0007", "biography", "Enrolled at University of Washington,  BA Psychology", "2024"), // extra whitespace: key must normalize
-    mk("pf-0009", "biography", "Lives in Springfield, studying at State University", "2026"),
+    mk("pf-0009", "biography", "Lives in Sydney, targeting MRes at UTS", "2026"),
     mk("pf-0004", "research", "Runs LLM evaluation studies across 40,000+ responses"), // trailing period stripped by normalize
   ];
   const w2 = writeFactsFile(file, gen2);

@@ -29,7 +29,7 @@ const SETTINGS = path.join(HOME_CLAUDE, "settings.json");
 fs.mkdirSync(HOOKS_DIR, { recursive: true });
 
 // 1. Copy the three global hooks next to the user's other global hooks.
-const GLOBAL_HOOKS = ["lkhs-prompt-retrieve.mjs", "lkhs-project-card.mjs", "lkhs-capture.mjs"];
+const GLOBAL_HOOKS = ["lkhs-prompt-retrieve.mjs", "lkhs-project-card.mjs", "lkhs-capture.mjs", "lkhs-pretool-lesson.mjs"];
 for (const h of GLOBAL_HOOKS) {
   fs.copyFileSync(path.join(VAULT, ".claude", "hooks", h), path.join(HOOKS_DIR, h));
 }
@@ -50,6 +50,11 @@ const entries = [
   { event: "SessionStart", matcher: "startup|resume|clear", script: "lkhs-project-card.mjs", timeout: 10 },
   { event: "SessionEnd", matcher: "", script: "lkhs-capture.mjs", timeout: 15 },
   { event: "PreCompact", matcher: "", script: "lkhs-capture.mjs", timeout: 15 },
+  // Lessons are mined from EVERY project's transcripts, so the trigger has to be global
+  // too. Registered per-project it would stay silent everywhere except the vault that
+  // owns the ledger, which is the one place the user is least likely to be working.
+  // Short timeout: this reads one JSON file and must never delay a tool call.
+  { event: "PreToolUse", matcher: "", script: "lkhs-pretool-lesson.mjs", timeout: 8 },
 ];
 
 const alreadyWired = (arr, script) =>

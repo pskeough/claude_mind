@@ -14,7 +14,16 @@ import { execSync, spawnSync } from "node:child_process";
 
 const HOME_CLAUDE = path.join(os.homedir(), ".claude");
 
-// 1. launchd jobs (macOS).
+// 1. Background jobs.
+// Windows registers Task Scheduler entries (install-jobs.mjs). An uninstall that only
+// knew about launchd would leave four orphaned tasks pointing at a deleted folder,
+// failing silently at every logon forever.
+if (process.platform === "win32") {
+  for (const name of ["ClaudeMind-Daemon", "ClaudeMind-Watcher", "ClaudeMind-Sweep", "ClaudeMind-Refresh"]) {
+    const r = spawnSync("schtasks", ["/Delete", "/TN", name, "/F"], { encoding: "utf8", shell: false, windowsHide: true });
+    console.log("  - scheduled task " + name + (r.status === 0 ? "" : " (was not registered)"));
+  }
+}
 if (process.platform === "darwin") {
   const uid = process.getuid();
   for (const job of ["daemon", "watcher", "sweep", "dream"]) {

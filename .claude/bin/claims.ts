@@ -20,7 +20,7 @@ import { memDir } from "./config";
 
 export interface Claim {
   id: string;
-  paper: string;               // e.g. "MyPaper"
+  paper: string;               // e.g. "a paper project", "a research paper"
   claim: string;               // the assertion, self-contained
   value: string;               // the load-bearing number/stat as it should appear
   source: string;              // file path / analysis artifact / citation that verifies it
