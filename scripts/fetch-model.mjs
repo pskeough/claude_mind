@@ -47,8 +47,9 @@ if (got !== SHA256) { console.error(`! checksum mismatch (got ${got}); refusing 
 fs.mkdirSync(path.dirname(DIR), { recursive: true });
 const tgz = path.join(path.dirname(DIR), `${NAME}.tar.gz`);
 fs.writeFileSync(tgz, buf);
-// tar ships with macOS, Linux and Windows 10+ (bsdtar as tar.exe).
-const tar = spawnSync("tar", ["-xzf", tgz, "-C", path.dirname(DIR)], { stdio: "inherit" });
+// tar ships with macOS, Linux and Windows 10+ (bsdtar as tar.exe). Run it from inside
+// the folder with a relative name: GNU tar (Git Bash's) reads "C:\..." as host:path.
+const tar = spawnSync("tar", ["-xzf", path.basename(tgz)], { cwd: path.dirname(DIR), stdio: "inherit" });
 fs.rmSync(tgz, { force: true });
 if (tar.status !== 0 || !present()) { console.error(`! unpack failed\n  FIX: unpack ${URL} into ${path.dirname(DIR)} by hand`); process.exit(1); }
 console.log(`embedding model installed: ${DIR}`);
