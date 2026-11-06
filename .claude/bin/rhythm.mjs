@@ -9,6 +9,8 @@
  *        states: manic | hypomanic | mixed | low | ok | note   (ok ends a report)
  *   node .claude/bin/rhythm.mjs ack [--outcome talked|declined|not-now]   a check-in happened
  *   node .claude/bin/rhythm.mjs pause 14d            no check-ins for a while (logging continues)
+ *   node .claude/bin/rhythm.mjs import <export folder | conversations.json>
+ *        claude.ai data export: counts her messages (desktop, web, phone), keeps no text
  *
  * Writes only under .claude/memory/rhythm/ and persona_clinical/rhythm.md.
  */
@@ -17,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   rhythmConfig, paths, readMessages, dayFeatures, withZeroDays, baselineOf, zOf, judgeDay,
-  dayKey, fmtHour, readJsonl, activeSelfReport, selfReportedDays, FEATURES,
+  dayKey, fmtHour, readJsonl, activeSelfReport, selfReportedDays, FEATURES, exportRows,
 } from "./rhythm-core.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -40,7 +42,7 @@ function scan() {
   if (!CFG.enabled) { console.log("rhythm: disabled (rhythm.enabled false)"); return; }
   const now = Date.now();
   const since = now - CFG.scanDays * DAY;
-  const msgs = readMessages(since);
+  const msgs = readMessages(since, ROOT, CFG.dayStartHour);
   const today = dayKey(now, CFG.dayStartHour);
   const rows = withZeroDays(dayFeatures(msgs, CFG), dayKey(since, CFG.dayStartHour), today);
   // the current day is incomplete; judge completed days only
@@ -135,7 +137,7 @@ function writeReport(judged, state) {
 function live() {
   const now = Date.now();
   const today = dayKey(now, CFG.dayStartHour);
-  const msgs = readMessages(now - 30 * 3600_000).filter((m) => dayKey(m.t, CFG.dayStartHour) === today);
+  const msgs = readMessages(now - 30 * 3600_000, ROOT, CFG.dayStartHour).filter((m) => dayKey(m.t, CFG.dayStartHour) === today);
   const row = dayFeatures(msgs, CFG)[0] || { day: today, msgs: 0, activeMin: 0, sessions: 0, projects: 0, nightMsgs: 0, lastHour: null, words: 0 };
   const st = readState();
   const out = { today: row, localTime: fmtHour(new Date().getHours() + new Date().getMinutes() / 60) };
@@ -170,6 +172,20 @@ else if (cmd === "note") {
   fs.mkdirSync(P.dir, { recursive: true });
   fs.writeFileSync(P.state, JSON.stringify(st, null, 2));
   console.log(`check-in recorded (${rec.outcome}); next one no sooner than ${CFG.cooldownDays} days`);
+} else if (cmd === "import") {
+  let f = path.resolve(positional[0] || "");
+  if (fs.existsSync(f) && fs.statSync(f).isDirectory()) f = path.join(f, "conversations.json");
+  if (!fs.existsSync(f)) { console.error("usage: rhythm.mjs import <unzipped claude.ai export folder | conversations.json>"); process.exit(1); }
+  const fresh = exportRows(JSON.parse(fs.readFileSync(f, "utf8")));
+  // merge with earlier imports: an export is cumulative, so newer rows win per chat+time
+  const all = new Map(readJsonl(P.exported).map((r) => [r.session + r.t, r]));
+  for (const r of fresh) all.set(r.session + r.t, r);
+  const rows = [...all.values()].sort((a, b) => a.t - b.t);
+  fs.mkdirSync(P.dir, { recursive: true });
+  fs.writeFileSync(P.exported, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const span = rows.length ? `${new Date(rows[0].t).toISOString().slice(0, 10)} to ${new Date(rows.at(-1).t).toISOString().slice(0, 10)}` : "nothing";
+  console.log(`imported ${fresh.length} of her messages (${rows.length} on file, ${span}); no text kept`);
+  if (CFG.enabled) scan();
 } else if (cmd === "pause") {
   const dur = parseDur(positional[0]) ?? 14 * DAY;
   const st = readState() || {};

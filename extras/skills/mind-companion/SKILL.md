@@ -6,8 +6,8 @@ description: Mood, mania, bipolar pacing and wellbeing conversations for the own
 # mind-companion
 
 Two things live behind this skill. One is a record: every night the vault counts how and
-when she used Claude Code (time of day, active minutes, sessions, projects, new projects;
-never message text) and compares it to her own rolling baseline. The other is a reasoning
+when she used Claude (Claude Desktop pulses, claude.ai exports she imports, Claude Code
+sessions; time of day, active minutes, chats, new threads; never message text) and compares it to her own rolling baseline. The other is a reasoning
 scaffold for psychological conversation, a 117k-word knowledge base with an eight-step
 turn procedure, in `kb/` and `rag/` next to this file.
 
@@ -91,7 +91,8 @@ what she reported, and anything the record cannot see. Low stretches matter too:
 noticeably less use than usual, late starts, few sessions. Name them as quietly as the
 highs.
 
-Be honest about what this is. It measures Claude Code use and nothing else. It cannot
+Be honest about what this is. It measures when and how much she uses Claude and nothing
+else; phone and browser chats only arrive with an export. It cannot
 see sleep directly, or her phone, or her life. Studies of phone and activity signals
 find real associations with mood episodes, mania included. They also find the
 signals are noisy and differ a lot from person to person, which is why everything is

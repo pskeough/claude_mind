@@ -1,8 +1,15 @@
 /**
  * rhythm-core.mjs - the usage-rhythm layer (wellbeing module).
  *
- * Reads the owner's own Claude Code transcripts (~/.claude/projects) and turns
- * them into one row of behavioural features per day: how much, how late, how
+ * Reads the owner's Claude use from three places and turns it into one row of
+ * behavioural features per day:
+ *   - Claude Desktop: a pulse the mind-wellbeing MCP server logs at the start of
+ *     every reply (time, chat id, word count of her message; never the text);
+ *   - claude.ai data exports she drops in (exact timestamps for every message,
+ *     desktop, web and phone), which also seed the baseline on day one;
+ *   - Claude Code transcripts (~/.claude/projects).
+ * For any day an export covers, the export replaces that day's pulses so the
+ * same messages are never counted twice. It produces: how much, how late, how
  * many threads at once, how many new projects. Nothing is sent anywhere and no
  * message text is stored, only counts and times.
  *
@@ -52,6 +59,8 @@ export const paths = (root) => {
     state: path.join(dir, "state.json"),
     notes: path.join(dir, "self-reports.jsonl"),
     checkins: path.join(dir, "checkins.jsonl"),
+    pulses: path.join(dir, "desktop-pulses.jsonl"),
+    exported: path.join(dir, "chat-export.jsonl"),
     report: path.join(root, "persona_clinical", "rhythm.md"),
     plan: path.join(root, "persona_clinical", "my-plan.md"),
   };
@@ -95,8 +104,35 @@ function typedText(o) {
   return s;
 }
 
-/** All typed messages since sinceMs: { t: epochMs, words, session, cwd }. */
-export function readMessages(sinceMs) {
+/** All typed messages since sinceMs, every source: { t: epochMs, words, session, cwd, src }. */
+export function readMessages(sinceMs, root, dayStartHour = DEFAULTS.dayStartHour) {
+  const msgs = readCodeMessages(sinceMs);
+  if (root) {
+    const P = paths(root);
+    const exported = readJsonl(P.exported).filter((m) => m.t >= sinceMs);
+    const covered = new Set(exported.map((m) => dayKey(m.t, dayStartHour)));
+    const pulses = readJsonl(P.pulses).filter((m) => m.t >= sinceMs && !covered.has(dayKey(m.t, dayStartHour)));
+    for (const m of [...exported, ...pulses]) msgs.push({ t: m.t, words: Math.min(500, m.words || 0), session: m.session, cwd: m.session, src: m.src });
+  }
+  return msgs.sort((a, b) => a.t - b.t);
+}
+
+/** claude.ai export (conversations.json) -> human message rows. Text is counted, never kept. */
+export function exportRows(convs) {
+  const rows = [];
+  for (const c of convs || []) {
+    for (const m of c.chat_messages || []) {
+      if (m.sender !== "human") continue;
+      const t = Date.parse(m.created_at);
+      if (!Number.isFinite(t)) continue;
+      const text = m.text || (m.content || []).filter((b) => b?.type === "text").map((b) => b.text).join(" ");
+      rows.push({ t, words: Math.min(500, String(text).split(/\s+/).filter(Boolean).length), session: `chat:${c.uuid}`, src: "export" });
+    }
+  }
+  return rows.sort((a, b) => a.t - b.t);
+}
+
+function readCodeMessages(sinceMs) {
   const msgs = [];
   for (const fp of transcriptFiles(sinceMs)) {
     let raw;
@@ -109,10 +145,10 @@ export function readMessages(sinceMs) {
       const t = Date.parse(o.timestamp);
       if (!Number.isFinite(t) || t < sinceMs) continue;
       // capped: a pasted document is not typing
-      msgs.push({ t, words: Math.min(500, text.split(/\s+/).filter(Boolean).length), session: o.sessionId || fp, cwd: o.cwd || "" });
+      msgs.push({ t, words: Math.min(500, text.split(/\s+/).filter(Boolean).length), session: o.sessionId || fp, cwd: o.cwd || "", src: "code" });
     }
   }
-  return msgs.sort((a, b) => a.t - b.t);
+  return msgs;
 }
 
 // ---- day features ---------------------------------------------------------

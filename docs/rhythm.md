@@ -3,16 +3,27 @@
 An opt-in add-on for someone who wants Claude to help them keep an eye on their own pace,
 built first for bipolar disorder. It works in the background and almost never speaks.
 
-Turn it on: `npm run install:wellbeing`. Turn it off: `node scripts/install-wellbeing.mjs --off`.
+Turn it on: `npm run install:wellbeing`, then quit and reopen Claude Desktop and paste
+`extras/wellbeing/desktop-preferences.txt` into Claude Desktop > Settings > Profile.
+Turn it off: `node scripts/install-wellbeing.mjs --off`.
 
 ## What it does
 
-**Logs, every night.** `rhythm.mjs scan` runs in the nightly refresh. It reads the
-timestamps of the messages you typed into Claude Code (all projects, `~/.claude/projects`)
-and records one row per day: active minutes, messages, sessions, projects, new projects,
-messages after midnight, first and last active hour. It never stores what you wrote.
-Headless `claude -p` runs (the vault's own miners and scripts) are excluded. A day runs
-05:00 to 05:00, so 2am belongs to the night before.
+**Where it looks.** Claude Desktop is the main source. Desktop has no hooks, so the
+installer registers a small local MCP server, `mind-wellbeing` (`.claude/bin/wellbeing-mcp.mjs`),
+in `claude_desktop_config.json`, and one paragraph in your personal preferences asks Claude
+to call `wellbeing_pulse` at the start of every reply. Each pulse logs a time, a chat id and
+the word count of your message, never the text. It returns the local time (Desktop has no
+clock of its own) and, rarely, the pacing or check-in note. Two more sources feed the same
+record. A claude.ai data export, whenever you drop one in ("import my export from
+~/Downloads/..."), has exact times for every message from desktop, web and phone, and gives
+the baseline months of history on day one. Claude Code transcripts count too, if you use
+Claude Code (headless `claude -p` runs excluded). For any day an export covers, the export
+replaces that day's pulses so nothing is counted twice.
+
+**Logs, every night.** `rhythm.mjs scan` runs in the nightly refresh and records one row per
+day: active minutes, messages, chats and sessions, new threads, messages after midnight,
+first and last active hour. A day runs 05:00 to 05:00, so 2am belongs to the night before.
 
 **Learns your usual.** Each day is compared with a rolling baseline of your previous six
 weeks (median and spread, robust to the odd huge day, days off included). Nothing is
@@ -23,7 +34,7 @@ out of the baseline, so an episode never becomes your new normal.
 are both well beyond your own spread (2.5 robust SDs at the default `low` sensitivity),
 or volume and breadth are both extreme together. The level goes to `elevated` only when
 three of the last four days are like that. One wild night is logged and nothing else
-happens. At `elevated` the next Claude session in any project gets one check-in note.
+happens. At `elevated` the next new Desktop chat (or Claude Code session) gets one check-in note.
 It is offered once that day. After the check-in nothing asks again for four days.
 
 **Pacing mode when you say so.** Tell Claude "I'm manic" (or hypomanic, mixed, low) and it
@@ -74,7 +85,11 @@ There are no notifications, reminders or prompts to log anything.
 |---|---|
 | `.claude/bin/rhythm-core.mjs` | features, baseline, judgement |
 | `.claude/bin/rhythm.mjs` | CLI: scan, status, live, note, ack, pause |
-| `.claude/bin/rhythm-hook.mjs` | the only code that speaks; called by the global SessionStart hook |
+| `.claude/bin/rhythm-hook.mjs` | the only code that speaks; called by the pulse and the Claude Code SessionStart hook |
+| `.claude/bin/wellbeing-mcp.mjs` | Claude Desktop server: pulse, note, check-in, status, plan, import, mind_companion_turn |
+| `extras/wellbeing/desktop-guide.md` | stance guidance, served to Desktop as the server's instructions |
+| `extras/wellbeing/desktop-preferences.txt` | the paragraph pasted into Settings > Profile |
+| `.claude/memory/rhythm/desktop-pulses.jsonl`, `chat-export.jsonl` | Desktop pulses and imported export counts (times and word counts only) |
 | `.claude/memory/rhythm/` | days.jsonl, state.json, self-reports.jsonl, checkins.jsonl |
 | `persona_clinical/rhythm.md` | readable record, rebuilt nightly |
 | `persona_clinical/my-plan.md` | your plan |
@@ -82,5 +97,6 @@ There are no notifications, reminders or prompts to log anything.
 
 `persona_clinical/` and `.claude/memory/` are gitignored and never leave the machine.
 
-It measures Claude Code use only, not Claude Desktop or claude.ai chats, and not your
-phone. It is not a medical device and does not replace your prescriber or care team.
+Between exports it sees Claude Desktop (through the pulse) and Claude Code. Chats on your
+phone or in a browser arrive only with the next export, and a pulse Claude forgets to send
+is a message the record misses, so it can undercount but never overcounts. It is not a medical device and does not replace your prescriber or care team.
