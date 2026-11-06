@@ -41,6 +41,7 @@ function cfg() {
 const CFG = cfg();
 const VOICE_ON = !!(process.env.LKHS_MIMESIS_PROFILES || CFG.mimesisProfilesRoot);
 const WEEKLY_REPORT_ON = (CFG.reports?.weekly ?? true) !== false;
+const RHYTHM_ON = CFG.rhythm?.enabled === true;
 
 function step(name, script, args = []) {
   log(`${name} start`);
@@ -71,6 +72,7 @@ try {
   step("moc", ".claude/bin/build-moc.ts");
   step("environment scan", ".claude/bin/env-scan.ts");
   step("state rollup", ".claude/bin/state-rollup.ts");
+  if (RHYTHM_ON) step("rhythm (usage baseline)", ".claude/bin/rhythm.mjs", ["scan"]);
   step("salience", ".claude/bin/salience.ts");
   step("rehearsal (lane packs)", ".claude/bin/build-rehearsal.ts");
   step("state rollup (TODAY.md)", ".claude/bin/state-rollup.ts");

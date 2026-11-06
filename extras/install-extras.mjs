@@ -30,6 +30,7 @@ const MIMESIS = flag("mimesis");
 const BACKUP = path.join(CLAUDE, "backups", `extras-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
 
 const SETS = {
+  wellbeing: { skills: ["mind-companion"] },
   core: { skills: ["master-context", "swarm"], agents: ["web-researcher.md"] },
   research: {
     skills: [
@@ -40,7 +41,7 @@ const SETS = {
     ],
   },
 };
-for (const g of GROUPS) if (!SETS[g] && g !== "voice") { console.error(`! unknown group "${g}" (core, research, voice)`); process.exit(1); }
+for (const g of GROUPS) if (!SETS[g] && g !== "voice") { console.error(`! unknown group "${g}" (core, research, wellbeing, voice)`); process.exit(1); }
 
 const read = (p) => { try { return fs.readFileSync(p); } catch { return null; } };
 function sameTree(a, b) {

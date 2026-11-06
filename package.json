@@ -81,7 +81,9 @@
     "install:jobs": "node scripts/install-jobs.mjs",
     "skills:index": "tsx .claude/bin/skill-index.ts",
     "migrate:vault": "node scripts/migrate-vault.mjs",
-    "leak:scan": "node scripts/leak-scan.mjs"
+    "leak:scan": "node scripts/leak-scan.mjs",
+    "rhythm": "node .claude/bin/rhythm.mjs",
+    "install:wellbeing": "node scripts/install-wellbeing.mjs"
   },
   "keywords": [],
   "author": "",

@@ -49,6 +49,10 @@ shows or switches the active voice. The skill ships in the Mimesis repo
 (`claude/skills/mimesis`) so it updates with the engine; the installer copies it
 from there and writes your Mimesis path into `/voice`.
 
+## wellbeing
+
+`mind-companion`: mood and pacing conversations backed by a bundled clinical-psychology KB, paired with the usage-rhythm module. Install with `npm run install:wellbeing`, not here directly; see `docs/rhythm.md`.
+
 ## Also here
 
 - `global-CLAUDE.md`: a starter for `~/.claude/CLAUDE.md`. Merge the sections you

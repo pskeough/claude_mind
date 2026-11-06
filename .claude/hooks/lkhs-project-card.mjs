@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { pathToFileURL } from "node:url";
 
 async function main() {
   if (process.env.LKHS_CAPTURE) return; // never inject into our own headless sessions
@@ -64,6 +65,16 @@ async function main() {
       ctx += `\n\nProject state card for "${slug}" (where you left off, synthesized from past sessions; may be slightly stale, verify against the live repo):\n\n${body}`;
     }
   }
+
+  // Wellbeing rhythm: silent unless she turned on pacing mode or a check-in is due.
+  try {
+    const mod = path.join(vault, ".claude", "bin", "rhythm-hook.mjs");
+    if (fs.existsSync(mod)) {
+      const { rhythmBlock } = await import(pathToFileURL(mod).href);
+      const block = rhythmBlock(vault);
+      if (block) ctx += `\n\n${block}`;
+    }
+  } catch {}
 
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: ctx },
