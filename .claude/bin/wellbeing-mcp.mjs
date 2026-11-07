@@ -15,8 +15,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -126,10 +126,32 @@ server.tool(
 
 server.tool(
   "wellbeing_import_export",
-  "Import a claude.ai data export (Settings > Privacy > Export data, then unzip). Counts her messages from desktop, web and phone by time; keeps no text. Pass the unzipped folder or its conversations.json.",
+  "Import a claude.ai data export (Settings > Privacy > Export data, then unzip). Counts her messages from desktop, web and phone by time for the rhythm record (no text kept there), and adds each conversation to her Claude Mind memory as a summarised session in the background. Pass the unzipped folder or its conversations.json.",
   { path: z.string() },
-  async ({ path: p }) => text(cli("import", p.replace(/^~(?=\/|\\|$)/, process.env.HOME || process.env.USERPROFILE || "~")))
+  async ({ path: p }) => {
+    const abs = p.replace(/^~(?=\/|\\|$)/, process.env.HOME || process.env.USERPROFILE || "~");
+    const counts = cli("import", abs);
+    return text(counts + "\n" + importChatsInBackground(abs));
+  }
 );
+
+// The same export also feeds the memory journal (import-chats.ts: one session per
+// conversation, summarised). That takes minutes and model calls, so it runs detached
+// with its own log; --skip-rhythm because the counts were just imported above.
+function importChatsInBackground(abs) {
+  const script = path.join(VAULT, ".claude", "bin", "import-chats.ts");
+  const loader = path.join(VAULT, "node_modules", "tsx", "dist", "loader.mjs");
+  if (!fs.existsSync(script) || !fs.existsSync(loader)) return "Memory import not available in this install.";
+  try {
+    const logFile = path.join(VAULT, ".claude", "logs", "import-chats.log");
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const fd = fs.openSync(logFile, "a");
+    const child = spawn(process.execPath, ["--import", pathToFileURL(loader).href, script, abs, "--skip-rhythm"],
+      { cwd: VAULT, detached: true, stdio: ["ignore", fd, fd], windowsHide: true, env: { ...process.env, LKHS_VAULT_ROOT: VAULT } });
+    child.unref();
+    return "The conversations are also being added to her memory in the background (a few minutes; log: .claude/logs/import-chats.log).";
+  } catch (e) { return `Memory import did not start (${e.message}).`; }
+}
 
 server.tool(
   "mind_companion_turn",

@@ -19,7 +19,9 @@
  *               conversation (speaker lines "User:" / "Assistant:" split turns;
  *               otherwise the whole file is one user message)
  *
- *   npx tsx .claude/bin/normalize-chat-export.ts <input.json | dir> [--out <dir>]
+ *   npm run normalize:chats -- <input.json | dir> [--out <dir>]
+ *   (npm run import:chats is the journal importer, import-chats.ts, which reuses
+ *   loadConversations from here.)
  *
  * Output: <out|input-dir>/normalized/conversations.json — then run
  *   npx tsx .claude/bin/persona-extract.ts <out-dir>/normalized
@@ -34,10 +36,10 @@ const argv = process.argv.slice(2);
 const INPUT = argv[0];
 const argOf = (n: string) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : undefined; };
 const APPEND = argv.includes("--append");
-if (!INPUT) { console.error("usage: tsx normalize-chat-export.ts <conversations.json | export-dir | md-dir> [--out <dir>] [--append]"); process.exit(1); }
 
-interface Msg { sender: string; text: string; created_at?: string }
-interface Conv { name: string; created_at?: string; chat_messages: Msg[] }
+export interface Msg { sender: string; text: string; created_at?: string }
+/** uuid/updated_at are kept when the source has them; import-chats.ts keys on them. */
+export interface Conv { name: string; created_at?: string; updated_at?: string; uuid?: string; chat_messages: Msg[] }
 
 const iso = (t: any): string | undefined => {
   if (t == null) return undefined;
@@ -70,7 +72,7 @@ function fromChatGPT(convos: any[]): Conv[] {
       if (!text) continue;
       msgs.push({ sender: m.author.role === "user" ? "human" : "assistant", text, created_at: iso(m.create_time) });
     }
-    if (msgs.length) out.push({ name: c.title || "untitled", created_at: iso(c.create_time), chat_messages: msgs });
+    if (msgs.length) out.push({ name: c.title || "untitled", created_at: iso(c.create_time), updated_at: iso(c.update_time), uuid: c.id || c.conversation_id, chat_messages: msgs });
   }
   return out;
 }
@@ -93,7 +95,7 @@ function fromGeneric(convos: any[]): Conv[] {
         || (Array.isArray(m.parts) ? m.parts.filter((p: any) => typeof p === "string").join("\n") : "");
       if (String(text).trim()) msgs.push({ sender, text: String(text).trim(), created_at: iso(m.created_at || m.create_time || m.timestamp) });
     }
-    if (msgs.length) out.push({ name: c.name || c.title || "untitled", created_at: iso(c.created_at || c.create_time || c.start_time), chat_messages: msgs });
+    if (msgs.length) out.push({ name: c.name || c.title || "untitled", created_at: iso(c.created_at || c.create_time || c.start_time), updated_at: iso(c.updated_at || c.update_time), uuid: c.uuid || c.id, chat_messages: msgs });
   }
   return out;
 }
@@ -131,18 +133,24 @@ function detect(convos: any[]): "claude" | "chatgpt" | "generic" {
 
 // ---- main ---------------------------------------------------------------------
 
-function main() {
-  const stat = fs.statSync(INPUT);
-  let convs: Conv[]; let kind: string;
-  if (stat.isDirectory() && !fs.existsSync(path.join(INPUT, "conversations.json"))) {
-    kind = "markdown-dir"; convs = fromMarkdownDir(INPUT);
-  } else {
-    const file = stat.isDirectory() ? path.join(INPUT, "conversations.json") : INPUT;
-    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-    const arr = Array.isArray(raw) ? raw : raw.conversations || [];
-    kind = detect(arr);
-    convs = kind === "chatgpt" ? fromChatGPT(arr) : kind === "claude" ? arr as Conv[] : fromGeneric(arr);
+/** Load any supported export (file or folder) as normalized conversations. */
+export function loadConversations(input: string): { kind: string; convs: Conv[] } {
+  const stat = fs.statSync(input);
+  if (stat.isDirectory() && !fs.existsSync(path.join(input, "conversations.json"))) {
+    return { kind: "markdown-dir", convs: fromMarkdownDir(input) };
   }
+  const file = stat.isDirectory() ? path.join(input, "conversations.json") : input;
+  const raw = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, ""));
+  const arr = Array.isArray(raw) ? raw : raw.conversations || [];
+  const kind = detect(arr);
+  const convs = kind === "chatgpt" ? fromChatGPT(arr) : kind === "claude" ? arr as Conv[] : fromGeneric(arr);
+  return { kind, convs };
+}
+
+function main() {
+  if (!INPUT) { console.error("usage: tsx normalize-chat-export.ts <conversations.json | export-dir | md-dir> [--out <dir>] [--append]"); process.exit(1); }
+  const stat = fs.statSync(INPUT);
+  let { kind, convs } = loadConversations(INPUT);
 
   const outDir = path.join(argOf("--out") || (stat.isDirectory() ? INPUT : path.dirname(INPUT)), "normalized");
   fs.mkdirSync(outDir, { recursive: true });
@@ -157,4 +165,4 @@ function main() {
   console.log(`next: npx tsx .claude/bin/persona-extract.ts ${outDir}`);
 }
 
-main();
+if (require.main === module) main();

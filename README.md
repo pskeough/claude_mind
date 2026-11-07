@@ -10,11 +10,14 @@ API keys, no extra cost).
 
 - **Remembers your sessions.** Every Claude Code conversation is captured, summarized,
   and indexed, so "what did we do on X?" or "where did I leave that?" just works.
+  Claude Desktop too: Desktop chats can read the memory and save themselves into it,
+  a claude.ai export brings in past chats from desktop, web and phone, and Cowork
+  sessions are swept like Claude Code ones (see `docs/desktop.md`).
 - **Knows your work.** It ingests the folders you point it at and builds a searchable,
   linked map of your projects.
 - **Knows you.** It synthesizes a deep, longitudinal user model from your exported
   chat history — Claude, ChatGPT, Gemini, or any transcript folder, via a universal
-  importer (`npm run import:chats`) — so Claude works the way you prefer from the
+  importer (`npm run normalize:chats`) — so Claude works the way you prefer from the
   first message. Facts are bi-temporal: the system knows when something stopped
   being true and answers from the current state, not the loudest old mention.
 - **Thinks about its own memory.** Nightly control loops grade yesterday's memory
@@ -63,6 +66,13 @@ and walks you through the rest (your profile, your folders, your chat history fr
 any provider, and turning on the background jobs — launchd on macOS, Task Scheduler
 on Windows). That's it.
 
+If you use Claude Desktop, setup also adds the memory tools to it. Two things to do by
+hand afterwards: quit and reopen Desktop, then paste the paragraph setup prints (also in
+`extras/desktop-preferences.txt`) into Desktop > Settings > Profile, so Claude saves
+your Desktop chats to memory. To bring in your past chats, export them from claude.ai >
+Settings > Privacy > Export data, unzip, and run
+`npm run import:chats -- <unzipped folder>`. Details in `docs/desktop.md`.
+
 ## Day to day
 
 You don't have to do anything — it works in the background while you use Claude Code
@@ -90,7 +100,7 @@ normally. When you want to look inside it:
   adversarial scope-leak harness), and the weekly hygiene pass alarms you if quality
   drifts.
 - To remove the parts installed outside this folder (background jobs, hooks, the memory
-  tool): `npm run uninstall`. To remove it entirely, also delete this folder.
+  tool in Claude Code and Claude Desktop): `npm run uninstall`. To remove it entirely, also delete this folder.
 
 For the technical details, see `CLAUDE.md`. For the persona-building step, see
 `docs/persona-synthesis.md`.

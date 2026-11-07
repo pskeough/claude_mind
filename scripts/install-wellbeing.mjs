@@ -11,9 +11,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { setDesktopServer, removeDesktopServer, desktopPreferences, printResults } from "./desktop-config.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CFG = path.join(ROOT, ".claude", "lkhs.config.json");
@@ -24,7 +24,12 @@ try { cfg = JSON.parse(fs.readFileSync(CFG, "utf8")); } catch {}
 cfg.rhythm = { sensitivity: "low", cooldownDays: 4, dayStartHour: 5, ...(cfg.rhythm || {}), enabled: !off };
 fs.writeFileSync(CFG, JSON.stringify(cfg, null, 2) + "\n");
 console.log(`rhythm.enabled = ${!off} (${path.relative(ROOT, CFG)})`);
-if (off) { console.log("Off. Nothing is logged or raised. The existing record is kept."); process.exit(0); }
+if (off) {
+  printResults(removeDesktopServer("mind-wellbeing"));
+  console.log("Off. Nothing is logged or raised. The existing record is kept.");
+  console.log("Take the wellbeing sentences out of Desktop > Settings > Profile too.");
+  process.exit(0);
+}
 
 const run = (label, args) => {
   console.log(`\n> ${label}`);
@@ -39,38 +44,26 @@ if (!fs.existsSync(plan)) {
   console.log(`plan template: ${path.relative(ROOT, plan)} (fill in on a calm week, or ask Claude to go through it)`);
 }
 
-// Claude Desktop: register the mind-wellbeing MCP server (the main way in)
-const desktopDir = process.platform === "darwin"
-  ? path.join(os.homedir(), "Library", "Application Support", "Claude")
-  : process.platform === "win32"
-    ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Claude")
-    : path.join(os.homedir(), ".config", "Claude");
-const desktopCfg = path.join(desktopDir, "claude_desktop_config.json");
+// Claude Desktop: register the mind-wellbeing MCP server (the main way in), in
+// every Desktop config found: %APPDATA%\Claude and the Store build's
+// %LOCALAPPDATA%\Claude-Data\claude_*, which is the one that build reads.
+// Absolute node path: Desktop launches servers with a minimal PATH.
 console.log("\n> Claude Desktop: mind-wellbeing MCP server");
-try {
-  let dc = {};
-  if (fs.existsSync(desktopCfg)) {
-    dc = JSON.parse(fs.readFileSync(desktopCfg, "utf8"));
-    fs.copyFileSync(desktopCfg, `${desktopCfg}.bak-wellbeing`);
-  }
-  dc.mcpServers = dc.mcpServers || {};
-  // absolute node path: Desktop launches servers with a minimal PATH
-  dc.mcpServers["mind-wellbeing"] = { command: process.execPath, args: [path.join(ROOT, ".claude", "bin", "wellbeing-mcp.mjs")] };
-  fs.mkdirSync(desktopDir, { recursive: true });
-  fs.writeFileSync(desktopCfg, JSON.stringify(dc, null, 2) + "\n");
-  console.log(`  registered in ${desktopCfg}`);
-} catch (e) { console.error(`  ! could not update ${desktopCfg}: ${e.message}`); }
+printResults(setDesktopServer("mind-wellbeing", { command: process.execPath, args: [path.join(ROOT, ".claude", "bin", "wellbeing-mcp.mjs")] }));
 
 run("skill: mind-companion (Claude Code)", ["extras/install-extras.mjs", "--groups", "wellbeing"]);
 run("global hooks (Claude Code session-start check-in gate)", ["scripts/install-global-hooks.mjs"]);
 run("first scan", [".claude/bin/rhythm.mjs", "scan"]);
 
-const prefs = fs.readFileSync(path.join(ROOT, "extras", "wellbeing", "desktop-preferences.txt"), "utf8").trim();
+// One paragraph: merged with the memory server's text when lkhs-memory is also
+// registered in Desktop (Desktop has a single preferences box).
+const prefs = desktopPreferences(ROOT, { wellbeing: true });
 console.log(`
 Done. Two things to do by hand, once:
 
 1. Quit Claude Desktop fully and reopen it (it reads MCP servers at launch).
-2. Claude Desktop > Settings > Profile > personal preferences: paste this in.
+2. Claude Desktop > Settings > Profile > personal preferences: paste this in
+   (replacing any earlier Claude Mind paragraph).
 
 ${prefs}
 

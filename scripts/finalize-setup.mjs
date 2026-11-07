@@ -6,7 +6,7 @@
  * Order:
  *   1. write-config         core_profile.json + global capture config
  *   2. install-global-hooks capture/retrieval hooks in every project
- *   3. register-mcp         lkhs-memory MCP tools at user scope
+ *   3. register-mcp         lkhs-memory MCP tools at user scope + in Claude Desktop
  *   4. install-launchd      always-on daemon/watcher + hourly sweep + daily dream (macOS)
  *
  * It does NOT run ingestion or persona synthesis — those are heavier, visible steps
@@ -47,6 +47,7 @@ if (DRY) {
   console.log(`  ${path.join(home, ".claude", "settings.json")}              <- adds 5 global hooks (backed up first)`);
   console.log(`  ${path.join(home, ".claude", "hooks", "*.mjs")}             <- copies the hook scripts`);
   console.log(`  ${path.join(home, ".claude.json")}                          <- registers the lkhs-memory MCP server`);
+  console.log(`  claude_desktop_config.json (every Claude Desktop config found) <- same server for Desktop chats`);
   if (process.platform === "darwin") console.log(`  ~/Library/LaunchAgents/com.lkhs.*.plist        <- background jobs`);
   console.log(`\nIf you already have Claude Mind installed from another folder, running this`);
   console.log(`for real will REPOINT it at ${VAULT}.`);

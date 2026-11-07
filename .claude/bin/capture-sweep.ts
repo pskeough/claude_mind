@@ -11,6 +11,9 @@
  *   npm run capture:sweep -- --dry   # list what would be captured, no model calls
  *   npm run capture:sweep -- --hours 24
  *   npm run capture:sweep -- --all   # full backfill (every session ever; expensive)
+ *
+ * Also sweeps Claude Desktop Cowork transcripts (local-agent-mode-sessions), which
+ * land in journal/Cowork.md with source claude-cowork.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -37,6 +40,45 @@ function loadExclude(): string[] {
 function excluded(cwd: string, list: string[]): boolean {
   const c = normPath(cwd);
   return list.some(ex => ex && (c === ex || c.startsWith(ex + "/")));
+}
+
+/** Claude Desktop's Cowork mode runs a Claude Code agent per task and keeps its
+ *  transcripts (same .jsonl format) under local-agent-mode-sessions, inside the
+ *  Desktop data folder rather than ~/.claude/projects:
+ *    Windows  %LOCALAPPDATA%\Claude-Data\<claude_hash>\local-agent-mode-sessions (Store build)
+ *             %APPDATA%\Claude\local-agent-mode-sessions (classic installer)
+ *    macOS    ~/Library/Application Support/Claude/local-agent-mode-sessions
+ *    Linux    ~/.config/Claude/local-agent-mode-sessions
+ *  Returns every <...>/.claude/projects directory found below those roots. */
+function coworkProjectDirs(): string[] {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const roots: string[] = [];
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+    const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+    try {
+      for (const d of fs.readdirSync(path.join(local, "Claude-Data"))) roots.push(path.join(local, "Claude-Data", d, "local-agent-mode-sessions"));
+    } catch { /* no Store build */ }
+    roots.push(path.join(appData, "Claude", "local-agent-mode-sessions"));
+  } else if (process.platform === "darwin") {
+    roots.push(path.join(home, "Library", "Application Support", "Claude", "local-agent-mode-sessions"));
+  } else {
+    roots.push(path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "Claude", "local-agent-mode-sessions"));
+  }
+  const out: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 8) return;
+    let ents: fs.Dirent[] = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.name === "node_modules") continue;
+      const abs = path.join(dir, e.name);
+      if (e.name === ".claude") { const p = path.join(abs, "projects"); if (fs.existsSync(p)) out.push(p); continue; }
+      walk(abs, depth + 1);
+    }
+  };
+  for (const r of roots) if (fs.existsSync(r)) walk(r, 0);
+  return out;
 }
 
 const HEAD_BYTES = 262144;
@@ -137,7 +179,7 @@ function isPromptPayload(head: string, bytes: number): boolean {
 }
 
 async function main() {
-  if (!fs.existsSync(PROJECTS_DIR)) { console.error("No projects dir:", PROJECTS_DIR); process.exit(1); }
+  if (!fs.existsSync(PROJECTS_DIR) && coworkProjectDirs().length === 0) { console.error("No projects dir:", PROJECTS_DIR); process.exit(1); }
 
   const dry = has("dry");
   const all = has("all");
@@ -182,11 +224,19 @@ async function main() {
   } catch { /* default model */ }
 
   const transcripts: string[] = [];
-  for (const dir of fs.readdirSync(PROJECTS_DIR)) {
-    const abs = path.join(PROJECTS_DIR, dir);
-    if (!fs.statSync(abs).isDirectory()) continue;
-    for (const f of fs.readdirSync(abs)) {
-      if (f.endsWith(".jsonl")) transcripts.push(path.join(abs, f));
+  const cowork = new Set<string>();
+  const projectRoots = [PROJECTS_DIR, ...coworkProjectDirs()];
+  for (const root of projectRoots) {
+    let dirs: string[] = [];
+    try { dirs = fs.readdirSync(root); } catch { continue; }
+    for (const dir of dirs) {
+      const abs = path.join(root, dir);
+      try { if (!fs.statSync(abs).isDirectory()) continue; } catch { continue; }
+      for (const f of fs.readdirSync(abs)) {
+        if (!f.endsWith(".jsonl")) continue;
+        transcripts.push(path.join(abs, f));
+        if (root !== PROJECTS_DIR) cowork.add(path.join(abs, f));
+      }
     }
   }
 
@@ -211,12 +261,14 @@ async function main() {
     const sessionId = path.basename(file, ".jsonl");
 
     if (dry) {
-      console.log(`would capture  ${path.basename(cwd)}  ${sessionId.slice(0, 8)}  (${new Date(mtime).toISOString().slice(0, 16)})`);
+      console.log(`would capture  ${cowork.has(file) ? "Cowork" : path.basename(cwd)}  ${sessionId.slice(0, 8)}  (${new Date(mtime).toISOString().slice(0, 16)})`);
       continue;
     }
 
-    const result = await captureSession({ transcript: file, cwd, sessionId, event: "sweep" });
-    if (result === "ok") { captured++; console.log(`captured  ${path.basename(cwd)}  ${sessionId.slice(0, 8)}`); }
+    const result = await captureSession(cowork.has(file)
+      ? { transcript: file, cwd, sessionId, event: "sweep", project: "Cowork", source: "claude-cowork" }
+      : { transcript: file, cwd, sessionId, event: "sweep" });
+    if (result === "ok") { captured++; console.log(`captured  ${cowork.has(file) ? "Cowork" : path.basename(cwd)}  ${sessionId.slice(0, 8)}`); }
     else skipped++;
   }
 

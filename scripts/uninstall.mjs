@@ -2,7 +2,7 @@
 /**
  * uninstall.mjs — cleanly remove everything setup installed OUTSIDE the vault folder:
  * the launchd jobs, the global hook wiring + copied hook files, and the MCP
- * registration. Leaves the vault folder and its memory intact (delete the folder by
+ * registration (Claude Code and Claude Desktop). Leaves the vault folder and its memory intact (delete the folder by
  * hand if you want that gone too). Backs up global settings before editing.
  *
  * Usage: node scripts/uninstall.mjs
@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync, spawnSync } from "node:child_process";
+import { removeDesktopServer, printResults } from "./desktop-config.mjs";
 
 const HOME_CLAUDE = path.join(os.homedir(), ".claude");
 
@@ -59,6 +60,12 @@ for (const h of HOOK_SCRIPTS) {
 if (spawnSync(process.platform === "win32" ? "where" : "which", ["claude"], { encoding: "utf8" }).status === 0) {
   spawnSync("claude", ["mcp", "remove", "lkhs-memory", "-s", "user"], { stdio: "ignore" });
   console.log("  - MCP lkhs-memory removed");
+}
+
+// 4. Claude Desktop entries (every config found, Store build included; backed up first).
+for (const name of ["lkhs-memory", "mind-wellbeing"]) {
+  console.log(`  - Claude Desktop ${name}`);
+  printResults(removeDesktopServer(name), "      ");
 }
 
 console.log("\nUninstalled. The global capture config (~/.claude/lkhs-capture-config.json) and the");

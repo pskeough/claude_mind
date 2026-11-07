@@ -171,9 +171,17 @@ Normalize each export (the importer auto-detects the format; `--append` merges
 several providers into one corpus), then extract:
 
 ```bash
-npm run import:chats -- /path/to/claude-export
-npm run import:chats -- /path/to/chatgpt-export --out /path/to/claude-export --append
+npm run normalize:chats -- /path/to/claude-export
+npm run normalize:chats -- /path/to/chatgpt-export --out /path/to/claude-export --append
 npm run persona:extract -- /path/to/claude-export/normalized
+```
+
+The same Claude export also goes into the session journal, one summarised session per
+conversation, so past Desktop, web and phone chats are searchable like captured ones
+(`--dry-run` first on a large export; see `docs/desktop.md`):
+
+```bash
+npm run import:chats -- /path/to/claude-export
 ```
 
 A pure-Claude export can also skip the normalizer and run persona:extract on the

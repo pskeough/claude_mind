@@ -7,6 +7,8 @@
  *   - project_state(project)            the L2 state card: where a project stands
  *   - timeline(project?, limit?)        recent session history, chronological
  *   - related(concept)                  graph neighbors of a concept/project
+ *   - save_session(chat_id, ...)        Claude Desktop writes its own chat summary into
+ *                                       the journal (id desktop-<chat_id>; see docs/desktop.md)
  *
  * Runs from any project: it reads centralVault from config and chdirs there so the
  * SQLite store, cards, journals and graph all resolve. stdout is the MCP protocol,
@@ -714,6 +716,59 @@ async function main() {
         const text = [factText && "STRUCTURED FACTS:\n" + factText, proseText && "PROSE:\n" + proseText].filter(Boolean).join("\n\n") || "No persona data found (has the persona layer been built and embedded?).";
         return { content: [{ type: "text", text }] };
       } catch (e: any) { return { content: [{ type: "text", text: `error: ${e.message}` }] }; }
+    }
+  );
+
+  // ---- save_session: live capture for Claude Desktop chats --------------------
+  // Desktop Chat conversations live server-side, so the transcript sweep never sees
+  // them. This lets the model write the summary itself at natural breaks. Stable id
+  // desktop-<chat_id>: a second save of the same chat replaces its journal entry.
+  server.tool(
+    "save_session",
+    "Save a summary of THIS conversation to the user's Claude Mind memory, so later chats and Claude Code sessions can recall it. Call at natural breaks and at the end of any substantive chat (skip quick one-off questions). Use one chat_id you invent at the start of the conversation and reuse it for every save; saving again with the same chat_id updates the same entry rather than adding another. Write a plain factual summary; leave out health or mood details.",
+    {
+      chat_id: z.string().describe("a short id you made up for this conversation, reused for every save, e.g. 'k7-garden-plan'"),
+      title: z.string().describe("a short title for the conversation"),
+      summary: z.string().describe("what the conversation covered and where it ended up, a few sentences"),
+      key_points: z.array(z.string()).optional().describe("the main points or facts worth remembering"),
+      decisions: z.array(z.string()).optional().describe("decisions or conclusions reached"),
+      open: z.array(z.string()).optional().describe("open threads and next steps"),
+      project: z.string().optional().describe("optional project name if the chat belongs to one; default journal is Claude-Desktop"),
+    },
+    async ({ chat_id, title, summary, key_points, decisions, open, project }) => {
+      try {
+        const { writeJournalEntry } = await import("./capture-session");
+        const cid = String(chat_id || "").replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+        if (!cid) return { content: [{ type: "text", text: "save_session needs a chat_id." }] };
+        if (!String(summary || "").trim()) return { content: [{ type: "text", text: "save_session needs a summary." }] };
+        const sessionId = `desktop-${cid}`;
+        const clean = (t: string) => toAscii(redact(String(t))).replace(/\s+/g, " ").trim();
+        const list = (h: string, xs?: string[]) => (xs && xs.length ? `**${h}:**\n${xs.map(clean).filter(Boolean).map(x => `- ${x}`).join("\n")}` : "");
+        const journal = (project && clean(project)) || "Claude-Desktop";
+        const body = [
+          clean(summary).slice(0, 4000),
+          list("Key points", key_points),
+          list("Outcomes/decisions", decisions),
+          list("Open threads / next steps", open),
+        ].filter(Boolean).join("\n\n");
+        // Keep the first save's start time so the entry's date stays put across updates.
+        let first: string | null = null, saves = 0;
+        let rows: string[] = [];
+        try { rows = fs.readFileSync(LEDGER_FILE, "utf-8").split("\n").filter(l => l.includes(sessionId)); } catch { /* first save */ }
+        for (const l of rows) {
+          try { const e = JSON.parse(l); if (e.sessionId === sessionId) { saves++; if (!first && e.sessionStart) first = e.sessionStart; } } catch { /* skip */ }
+        }
+        const nowIso = new Date().toISOString();
+        const r = await writeJournalEntry({
+          sessionId, project: journal, cwd: "claude-desktop", event: "desktop-save",
+          sessionDate: new Date(first || nowIso), title: clean(title) || "Desktop chat", summary: body,
+          sessionStart: first || nowIso, sessionEnd: nowIso, source: "claude-desktop", replace: true,
+          lineCount: saves + 1,
+        });
+        log(`save_session ${sessionId} -> ${journal} (${r}, save #${saves + 1})`);
+        if (r !== "ok") return { content: [{ type: "text", text: "Memory is busy; try save_session again in a moment." }] };
+        return { content: [{ type: "text", text: saves ? `Updated the saved entry for this chat (${sessionId}).` : `Saved to memory as ${sessionId}.` }] };
+      } catch (e: any) { log(`save_session err ${e.message}`); return { content: [{ type: "text", text: `save error: ${e.message}` }] }; }
     }
   );
 

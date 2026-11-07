@@ -4,22 +4,28 @@ An opt-in add-on for someone who wants Claude to help them keep an eye on their 
 built first for bipolar disorder. It works in the background and almost never speaks.
 
 Turn it on: `npm run install:wellbeing`, then quit and reopen Claude Desktop and paste
-`extras/wellbeing/desktop-preferences.txt` into Claude Desktop > Settings > Profile.
-Turn it off: `node scripts/install-wellbeing.mjs --off`.
+the paragraph it prints into Claude Desktop > Settings > Profile. If the memory server is
+also in Desktop (see `docs/desktop.md`), that paragraph covers both tools in one, with one
+chat id; otherwise it is `extras/wellbeing/desktop-preferences.txt` as is.
+Turn it off: `node scripts/install-wellbeing.mjs --off` (also removes the Desktop entry).
 
 ## What it does
 
 **Where it looks.** Claude Desktop is the main source. Desktop has no hooks, so the
 installer registers a small local MCP server, `mind-wellbeing` (`.claude/bin/wellbeing-mcp.mjs`),
-in `claude_desktop_config.json`, and one paragraph in your personal preferences asks Claude
-to call `wellbeing_pulse` at the start of every reply. Each pulse logs a time, a chat id and
-the word count of your message, never the text. It returns the local time (Desktop has no
+in every `claude_desktop_config.json` it finds (on Windows both `%APPDATA%\Claude` and the
+Store build's `%LOCALAPPDATA%\Claude-Data\claude_*`, which is the one that build reads),
+and one paragraph in your personal preferences asks Claude to call `wellbeing_pulse` at the start of every reply. Each pulse logs
+a time, a chat id and the word count of your message, never the text. It returns the local time (Desktop has no
 clock of its own) and, rarely, the pacing or check-in note. Two more sources feed the same
 record. A claude.ai data export, whenever you drop one in ("import my export from
 ~/Downloads/..."), has exact times for every message from desktop, web and phone, and gives
 the baseline months of history on day one. Claude Code transcripts count too, if you use
 Claude Code (headless `claude -p` runs excluded). For any day an export covers, the export
-replaces that day's pulses so nothing is counted twice.
+replaces that day's pulses so nothing is counted twice. The same export also feeds the
+memory journal: `npm run import:chats -- <folder>` runs both imports, and the Desktop
+`wellbeing_import_export` tool starts the journal import in the background. The rhythm
+record keeps no text; the journal keeps a summary of each chat.
 
 **Logs, every night.** `rhythm.mjs scan` runs in the nightly refresh and records one row per
 day: active minutes, messages, chats and sessions, new threads, messages after midnight,
@@ -88,7 +94,8 @@ There are no notifications, reminders or prompts to log anything.
 | `.claude/bin/rhythm-hook.mjs` | the only code that speaks; called by the pulse and the Claude Code SessionStart hook |
 | `.claude/bin/wellbeing-mcp.mjs` | Claude Desktop server: pulse, note, check-in, status, plan, import, mind_companion_turn |
 | `extras/wellbeing/desktop-guide.md` | stance guidance, served to Desktop as the server's instructions |
-| `extras/wellbeing/desktop-preferences.txt` | the paragraph pasted into Settings > Profile |
+| `extras/wellbeing/desktop-preferences.txt` | the paragraph pasted into Settings > Profile (merged with `extras/desktop-preferences.txt` when the memory server is in Desktop) |
+| `scripts/desktop-config.mjs` | finds every Desktop config per OS and build, edits `mcpServers` |
 | `.claude/memory/rhythm/desktop-pulses.jsonl`, `chat-export.jsonl` | Desktop pulses and imported export counts (times and word counts only) |
 | `.claude/memory/rhythm/` | days.jsonl, state.json, self-reports.jsonl, checkins.jsonl |
 | `persona_clinical/rhythm.md` | readable record, rebuilt nightly |

@@ -55,7 +55,8 @@
     "prune:stale": "tsx .claude/bin/prune-stale.ts",
     "refresh": "node scripts/refresh.mjs",
     "brief": "node scripts/morning-brief.mjs",
-    "import:chats": "tsx .claude/bin/normalize-chat-export.ts",
+    "import:chats": "tsx .claude/bin/import-chats.ts",
+    "normalize:chats": "tsx .claude/bin/normalize-chat-export.ts",
     "learn": "tsx .claude/bin/lessons.ts",
     "learn:mine": "tsx .claude/bin/lesson-mine-behavioral.ts",
     "learn:prefs": "tsx .claude/bin/lesson-mine-preferences.ts",
@@ -83,7 +84,8 @@
     "migrate:vault": "node scripts/migrate-vault.mjs",
     "leak:scan": "node scripts/leak-scan.mjs",
     "rhythm": "node .claude/bin/rhythm.mjs",
-    "install:wellbeing": "node scripts/install-wellbeing.mjs"
+    "install:wellbeing": "node scripts/install-wellbeing.mjs",
+    "install:desktop": "node scripts/register-mcp.mjs --desktop-only"
   },
   "keywords": [],
   "author": "",

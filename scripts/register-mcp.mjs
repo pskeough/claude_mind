@@ -1,19 +1,48 @@
 #!/usr/bin/env node
 /**
- * register-mcp.mjs — register the lkhs-memory MCP server with Claude Code at user
- * scope, so its tools (search_memory, project_state, timeline, related, explore,
- * user_profile, recall_persona) are available in every project. Idempotent: removes
- * any existing registration first. Requires the `claude` CLI on PATH.
+ * register-mcp.mjs - register the lkhs-memory MCP server so its tools (search_memory,
+ * project_state, timeline, related, explore, user_profile, recall_persona,
+ * save_session) are available everywhere:
  *
- * Usage: node scripts/register-mcp.mjs   (run from the vault, or --vault PATH)
+ *   1. Claude Desktop: written into every claude_desktop_config.json found
+ *      (scripts/desktop-config.mjs knows the per-OS and Store-build paths).
+ *   2. Claude Code: `claude mcp add` at user scope (needs the `claude` CLI).
+ *
+ * Idempotent: removes any existing registration first, and leaves an unchanged
+ * Desktop entry alone.
+ *
+ * Usage: node scripts/register-mcp.mjs                (run from the vault, or --vault PATH)
+ *        node scripts/register-mcp.mjs --no-desktop   Claude Code only
+ *        node scripts/register-mcp.mjs --desktop-only Claude Desktop only
+ *        node scripts/register-mcp.mjs --off          remove the Claude Desktop entry
+ *                                                     (the Claude Code one: npm run uninstall)
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { setDesktopServer, removeDesktopServer, lkhsMemoryEntry, printResults, desktopPreferences } from "./desktop-config.mjs";
 
 const argv = process.argv.slice(2);
 const flag = (n) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined; };
 const VAULT = path.resolve(flag("vault") || process.cwd());
+const NAME = "lkhs-memory";
+
+if (argv.includes("--off")) {
+  console.log(`Claude Desktop: removing '${NAME}'`);
+  printResults(removeDesktopServer(NAME));
+  console.log("Quit and reopen Claude Desktop for it to take effect.");
+  process.exit(0);
+}
+
+if (!argv.includes("--no-desktop")) {
+  console.log(`Claude Desktop: '${NAME}'`);
+  printResults(setDesktopServer(NAME, lkhsMemoryEntry(VAULT)));
+  console.log("  Quit and reopen Claude Desktop to load it, then paste this into Desktop > Settings >");
+  console.log("  Profile > personal preferences (replacing any earlier Claude Mind paragraph) so chats");
+  console.log("  are saved to memory. See docs/desktop.md.\n");
+  console.log(desktopPreferences(VAULT, { memory: true }) + "\n");
+}
+if (argv.includes("--desktop-only")) process.exit(0);
 
 const claude = spawnSync(process.platform === "win32" ? "where" : "which", ["claude"], { encoding: "utf8" });
 if (claude.status !== 0) {
@@ -21,7 +50,6 @@ if (claude.status !== 0) {
   process.exit(1);
 }
 
-const NAME = "lkhs-memory";
 let target;
 if (process.platform === "win32") {
   // Windows: register node + tsx directly (cwd handled by the launcher pattern is not
