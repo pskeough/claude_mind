@@ -733,7 +733,7 @@ async function main() {
       key_points: z.array(z.string()).optional().describe("the main points or facts worth remembering"),
       decisions: z.array(z.string()).optional().describe("decisions or conclusions reached"),
       open: z.array(z.string()).optional().describe("open threads and next steps"),
-      project: z.string().optional().describe("optional project name if the chat belongs to one; default journal is Claude-Desktop"),
+      project: z.string().optional().describe("optional project name if the chat belongs to one; recorded as a tag; saves always go to the Claude-Desktop journal"),
     },
     async ({ chat_id, title, summary, key_points, decisions, open, project }) => {
       try {
@@ -744,7 +744,7 @@ async function main() {
         const sessionId = `desktop-${cid}`;
         const clean = (t: string) => toAscii(redact(String(t))).replace(/\s+/g, " ").trim();
         const list = (h: string, xs?: string[]) => (xs && xs.length ? `**${h}:**\n${xs.map(clean).filter(Boolean).map(x => `- ${x}`).join("\n")}` : "");
-        const journal = (project && clean(project)) || "Claude-Desktop";
+        const journal = "Claude-Desktop"; // fixed: a chat cannot write into project journals; project is kept as a tag only
         const body = [
           clean(summary).slice(0, 4000),
           list("Key points", key_points),
@@ -762,7 +762,7 @@ async function main() {
         const r = await writeJournalEntry({
           sessionId, project: journal, cwd: "claude-desktop", event: "desktop-save",
           sessionDate: new Date(first || nowIso), title: clean(title) || "Desktop chat", summary: body,
-          sessionStart: first || nowIso, sessionEnd: nowIso, source: "claude-desktop", replace: true,
+          sessionStart: first || nowIso, sessionEnd: nowIso, source: "claude-desktop", replace: true, harvest: false,
           lineCount: saves + 1,
         });
         log(`save_session ${sessionId} -> ${journal} (${r}, save #${saves + 1})`);
