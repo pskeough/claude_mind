@@ -38,7 +38,7 @@ import {
   sessionHalfLifeDays, dedupJaccard, enableNudge, nudgeFloor, enableGraphHop, etiquettePersonalProjects,
   enablePpr, pprAlpha, pprBeta, pprMaxFiles, pprMaxTerms, pprMaxCandidates, pprGraphBoost,
   resolveProfile, scopeRank, scopeProfiles,
-  TRIVIAL_RE, RECALL_RE, META_RE, IDENTITY_RE,, embedCacheDir } from "./config";
+  TRIVIAL_RE, RECALL_RE, META_RE, IDENTITY_RE, embedCacheDir } from "./config";
 
 // Gate constants + intent regexes live in config.ts (single source of truth,
 // shared with lkhs-web.ts so the retrieval inspector reflects the real gate).
